@@ -1,0 +1,88 @@
+{% extends "auth_base.html" %}
+{% block title %}Sign in | ArmyEye{% endblock %}
+
+{#
+  Server-driven form, unchanged contract: Flask-WTF CSRF via form.hidden_tag(), the
+  `next` passthrough, and the server-rendered `error`. No AJAX/SPA conversion - the
+  server stays responsible for authentication, rate limiting and the redirect target.
+
+  Deliberately absent:
+    - "Forgot password?" - no self-service recovery flow exists; a dead link would be worse
+    - "Remember me"      - no persistent-session support exists; it would be a lie
+#}
+
+{% block content %}
+<p class="auth-card__eyebrow">Secure Access</p>
+<h1 class="auth-card__title">Sign in to ArmyEye</h1>
+<p class="auth-card__lead">Use your authorized account to access the system.</p>
+
+{#
+  The route only sets `error` for authentication failures. When the FORM itself fails
+  validation (missing/expired CSRF token, or an empty field submitted with JS off)
+  validate_on_submit() simply returns False and the page re-rendered silently - the
+  user pressed Sign In and nothing visibly happened. Surface those here so the state is
+  never a mystery. Template-only: no authentication logic is changed.
+#}
+{% set shown_error = error %}
+{% if not shown_error and form.errors %}
+    {% if form.csrf_token.errors %}
+        {% set shown_error = 'Your sign-in session expired. Please try again.' %}
+    {% else %}
+        {% set shown_error = 'Enter your username and password.' %}
+    {% endif %}
+{% endif %}
+
+{% if shown_error %}
+{# Jinja autoescaping handles the message; the server only sends safe, generic text. #}
+<div class="auth-error" role="alert" aria-live="assertive">
+    <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+    <span>
+        <span class="auth-error__title">Unable to sign in</span>
+        {{ shown_error }}
+    </span>
+</div>
+{% endif %}
+
+<form method="POST" action="{{ url_for('login') }}" data-auth-form novalidate>
+    {{ form.hidden_tag() }}
+    <input type="hidden" name="next" value="{{ request.args.get('next', '') }}">
+
+    <div class="auth-field">
+        <label class="form-label" for="username">Username</label>
+        <div class="auth-input">
+            <i class="fas fa-user auth-input__icon" aria-hidden="true"></i>
+            <input class="form-control" id="username" name="username" type="text"
+                   autocomplete="username" autocapitalize="none" spellcheck="false"
+                   required data-autofocus
+                   value="{{ form.username.data or '' }}">
+        </div>
+    </div>
+
+    <div class="auth-field">
+        <label class="form-label" for="password">Password</label>
+        <div class="auth-input">
+            <i class="fas fa-lock auth-input__icon" aria-hidden="true"></i>
+            <input class="form-control has-trailing" id="password" name="password" type="password"
+                   autocomplete="current-password" required
+                   data-caps-hint="caps-hint" aria-describedby="caps-hint">
+            <button class="auth-input__toggle" type="button"
+                    data-toggle-for="password" aria-pressed="false" aria-label="Show password">
+                <i class="fas fa-eye" aria-hidden="true"></i>
+            </button>
+        </div>
+        <p class="auth-hint" id="caps-hint" hidden>
+            <i class="fas fa-arrow-up" aria-hidden="true"></i>Caps Lock is on
+        </p>
+    </div>
+
+    <button type="submit" class="btn btn-primary auth-submit" data-busy-label="Signing in…">
+        <i class="fas fa-right-to-bracket me-2" aria-hidden="true"></i>Sign In
+    </button>
+</form>
+
+<p class="auth-notice">
+    <i class="fas fa-shield-halved" aria-hidden="true"></i>Authorized access only.
+    Activity may be logged for security and operational purposes.<br>
+    Contact your system administrator if you cannot access your account.
+</p>
+{% endblock %}

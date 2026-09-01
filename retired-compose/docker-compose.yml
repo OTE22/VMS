@@ -1,0 +1,110 @@
+services:
+  infernode:
+    build:
+      context: .
+      args:
+        # cpu (default) or gpu - set by scripts/detect-compute.* into .env
+        COMPUTE: ${COMPUTE:-cpu}
+    container_name: VMS
+    
+    # Network mode options:
+    # - Bridge mode (default, cross-platform compatible - recommended)
+    # - Host mode (Linux only, uncomment below to use)
+    network_mode: host
+        
+    # USB Device Mapping for Webcams and other USB devices
+    # Uncomment the appropriate section based on your needs:
+    
+    # Option 1: Map all video devices (recommended for webcams)
+    # devices:
+    #   - /dev/video0:/dev/video0    # First webcam
+    #   - /dev/video1:/dev/video1    # Second webcam (if available)
+    #   - /dev/video2:/dev/video2    # Third webcam (if available)
+    
+    # Option 2: Map specific USB devices by device path
+    # devices:
+    #   - /dev/bus/usb/001/002:/dev/bus/usb/001/002  # Specific USB device
+    
+    # Option 3: Privileged mode (gives access to ALL devices - use with caution!)
+    # privileged: true
+    
+    # Option 4: Grant specific device access permissions
+    # device_cgroup_rules:
+    #   - 'c 81:* rmw'   # Video devices (video0, video1, etc.)
+    #   - 'c 189:* rmw'  # USB devices
+    
+    volumes:
+      # Mount model repository for persistent model storage
+      - ./InferenceNode/model_repository:/app/InferenceNode/model_repository
+      # Mount logs directory for persistent logging
+      - ./InferenceNode/logs:/app/InferenceNode/logs
+      # Optional: Mount custom configuration
+      - ./InferenceNode/node_settings.json:/app/InferenceNode/node_settings.json:ro
+      
+      # Optional: Mount /dev for device access (alternative to devices mapping)
+      # - /dev:/dev
+    
+    environment:
+      - PYTHONUNBUFFERED=1
+      - NODE_NAME=docker-infernode-host
+      - NODE_PORT=5555
+      # WSL2 Discovery Configuration
+      - DISCOVERY_INTERFACE=eth0
+      - DISCOVERY_BIND_IP=0.0.0.0
+      - DISCOVERY_PORT=8888
+      # Flask session signing (auth). Set a stable value in production.
+      - FLASK_SECRET_KEY=${FLASK_SECRET_KEY:-}
+      # --- ArmyEye's OWN auth/config database (self-contained; NOT FACE_DETECTOR) ---
+      # Host networking: reach the bundled 'db' service via localhost:5432.
+      - ARMYEYE_DATABASE_URL=postgresql://armeye:${ARMEYE_DB_PASSWORD:-armeye}@localhost:${ARMEYE_DB_PORT:-5433}/armeye
+      # Initial admin, seeded only when the users table is empty (must change on first login):
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      # Admin-only custom-engine builder (writes server code); off by default:
+      - ENABLE_ENGINE_BUILDER=${ENABLE_ENGINE_BUILDER:-false}
+      # Webhook Bearer-token auth. Provide the secret from the host env / .env file.
+      # Auth is REQUIRED by default (fail-closed): if unset, webhooks will NOT send.
+      - WEBHOOK_AUTH_TOKEN=${WEBHOOK_AUTH_TOKEN:-}
+      # - WEBHOOK_AUTH_REQUIRED=true
+      # - WEBHOOK_AUTH_TOKEN_FILE=/run/secrets/webhook_auth_token
+
+    depends_on:
+      db:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+  # ArmyEye's OWN PostgreSQL database (self-contained control plane).
+  db:
+    image: postgres:16-alpine
+    container_name: VMS-db
+    environment:
+      - POSTGRES_DB=armeye
+      - POSTGRES_USER=armeye
+      - POSTGRES_PASSWORD=${ARMEYE_DB_PASSWORD:-armeye}
+    ports:
+      # Host port 5433 by default: 5432 is commonly taken by another Postgres
+      # (e.g. the FACE_DETECTOR stack). The host-networked VMS app connects to
+      # localhost:${ARMEYE_DB_PORT}. Container-internal port stays 5432.
+      - "${ARMEYE_DB_PORT:-5433}:5432"
+    volumes:
+      - armeye_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U armeye -d armeye"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  armeye_pgdata:
+
+    # ports:
+      # - "${NODE_PORT:-5555}:${NODE_PORT:-5555}"      # Web interface (uses NODE_PORT env var, defaults to 5555)
+      # - "8888:8888/udp"  # Network discovery
+
+# Docker secret source for the webhook token (uncomment together with the
+# 'secrets:' reference and WEBHOOK_AUTH_TOKEN_FILE env line on the service above).
+# secrets:
+#   webhook_auth_token:
+#     file: ./secrets/webhook_auth_token.txt   # file containing ONLY the token

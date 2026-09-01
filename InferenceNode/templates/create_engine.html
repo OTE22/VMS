@@ -1,0 +1,1161 @@
+{% extends "base.html" %}
+{% block title %}Create Custom Engine | ArmyEye{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+<div class="col-xxl-9 col-xl-10">
+
+  <div class="ae-page-header">
+    <div>
+      <h1><i class="fas fa-cogs me-2"></i>Create Custom Engine</h1>
+      <p class="ae-subtitle">Generate a new inference engine for this node from a guided template.
+        Every answer below feeds a server-side code generator — nothing you type is executed here.</p>
+    </div>
+  </div>
+
+  <div class="alert alert-warning py-2 small">
+    <i class="fas fa-triangle-exclamation me-1"></i>
+    <strong>Administrator action.</strong> Creating an engine writes a Python file that this node
+    imports and runs as server code. Installation is <strong>permanent</strong> — there is no
+    delete or rename endpoint, and the generated engine key cannot be changed afterwards.
+  </div>
+
+  <!-- Stepper -->
+  <ul class="ae-stepper" id="stepper" role="tablist" aria-label="Engine creation steps">
+    <li><button type="button" class="ae-step" data-step="1" role="tab"><span class="ae-step-num">1</span><span class="ae-step-label">Purpose</span></button></li>
+    <li><button type="button" class="ae-step" data-step="2" role="tab"><span class="ae-step-num">2</span><span class="ae-step-label">Model</span></button></li>
+    <li><button type="button" class="ae-step" data-step="3" role="tab"><span class="ae-step-num">3</span><span class="ae-step-label">Runtime</span></button></li>
+    <li><button type="button" class="ae-step" data-step="4" role="tab"><span class="ae-step-num">4</span><span class="ae-step-label">Outputs</span></button></li>
+    <li><button type="button" class="ae-step" data-step="5" role="tab"><span class="ae-step-num">5</span><span class="ae-step-label">Class Mapping</span></button></li>
+    <li><button type="button" class="ae-step" data-step="6" role="tab"><span class="ae-step-num">6</span><span class="ae-step-label">Validate &amp; Create</span></button></li>
+  </ul>
+
+  <div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span id="step-title"><i class="fas fa-bullseye me-2"></i>Purpose</span>
+      <small class="text-muted" id="step-counter" aria-live="polite">Step 1 of 6</small>
+    </div>
+    <div class="card-body">
+
+      <!-- ============================================================ 1 -->
+      <section class="wiz-step" data-step="1" role="tabpanel" aria-label="Purpose">
+        <div class="mb-4">
+          <label class="form-label ae-required" for="display_name">Engine name</label>
+          <input class="form-control" id="display_name" maxlength="80" autocomplete="off"
+                 spellcheck="false" placeholder="e.g. Thermal Person Detector"
+                 aria-describedby="name-preview">
+          <div class="invalid-feedback" id="name-err"></div>
+          <div class="mt-2 small" id="name-preview">
+            <div>Python class: <code class="ae-key-preview" id="pv-class">—</code></div>
+            <div>Engine key: <code class="ae-key-preview" id="pv-key">—</code>
+              <span id="pv-uniq" class="ms-2"></span></div>
+            <div class="ae-hint mt-1">
+              The key is derived from the name and is <strong>permanent</strong>. Note that
+              consecutive capitals are split — <code>PG Verify Cam</code> becomes
+              <code>p_g_verify_cam</code>. Use ordinary words for a cleaner key.
+            </div>
+          </div>
+        </div>
+
+        <fieldset class="mb-2">
+          <legend class="form-label mb-1">Reported task type</legend>
+          <p class="ae-hint mb-2">
+            This is <strong>metadata only</strong>. All four options generate the same
+            detection-shaped engine code; the choice only sets the <code>task_type</code>
+            string that the engine reports in its JSON results. It does not change how
+            inference or drawing works.
+          </p>
+          <div class="button-selector" id="task-selector" role="radiogroup" aria-label="Reported task type"></div>
+        </fieldset>
+      </section>
+
+      <!-- ============================================================ 2 -->
+      <section class="wiz-step d-none" data-step="2" role="tabpanel" aria-label="Model">
+        <p class="ae-hint mb-3">
+          Optionally pick a model already stored on this node. The wizard uses it to
+          recommend a runtime, prefill accepted file extensions and — where it can be read
+          safely — its class labels. <strong>The model is not attached to the engine</strong>;
+          you choose the model again when you build a pipeline.
+        </p>
+        <div id="model-list"></div>
+      </section>
+
+      <!-- ============================================================ 3 -->
+      <section class="wiz-step d-none" data-step="3" role="tabpanel" aria-label="Runtime">
+        <p class="ae-hint mb-3">
+          The runtime decides which library the generated engine calls. Read the readiness
+          badge carefully — only the Ultralytics template produces an engine that returns
+          detections without further code.
+        </p>
+        <div class="button-selector ae-wide" id="preset-selector" role="radiogroup" aria-label="Runtime preset"></div>
+
+        <div class="alert alert-warning py-2 small d-none mt-3" id="skeleton-ack-box">
+          <div class="form-check mb-0">
+            <input class="form-check-input" type="checkbox" id="skeleton-ack">
+            <label class="form-check-label" for="skeleton-ack">
+              I understand this template installs a <strong>skeleton</strong>. It will load
+              successfully but return <strong>zero detections</strong> until a developer
+              completes the <code>_infer</code> / <code>_postprocess</code> sections in the
+              generated file.
+            </label>
+          </div>
+        </div>
+
+        <hr class="my-4">
+        <h6 class="mb-2"><i class="fas fa-microchip me-2"></i>Node hardware</h6>
+        <div id="hardware-info" class="small text-muted">Loading…</div>
+        <div class="ae-hint mt-2">
+          <i class="fas fa-circle-info me-1"></i>
+          Shown for context only. The engine stores no device setting — the execution device
+          is selected when you create a pipeline. This is a snapshot taken when the node started.
+        </div>
+      </section>
+
+      <!-- ============================================================ 4 -->
+      <section class="wiz-step d-none" data-step="4" role="tabpanel" aria-label="Outputs">
+        <div class="mb-4">
+          <label class="form-label" for="confidence">
+            Default confidence threshold: <strong id="conf-val">0.40</strong>
+          </label>
+          <input class="form-range" type="range" id="confidence" min="0" max="1" step="0.05" value="0.4">
+          <div class="ae-hint" id="conf-note"></div>
+        </div>
+
+        <div class="mb-4">
+          <label class="form-label ae-required">Accepted model file extensions</label>
+          <div class="ae-chips mb-2" id="ext-chips"></div>
+          <div class="input-group input-group-sm" style="max-width: 320px;">
+            <input class="form-control" id="ext-custom" placeholder="e.g. .tflite"
+                   maxlength="16" autocomplete="off" spellcheck="false"
+                   aria-label="Add a custom extension">
+            <button class="btn btn-outline-secondary" type="button" id="ext-add">
+              <i class="fas fa-plus me-1"></i>Add
+            </button>
+          </div>
+          <div class="ae-hint mt-1">The generated <code>check_valid_model()</code> accepts only
+            these extensions. At least one is required.</div>
+          <div class="text-danger small mt-1 d-none" id="ext-err">Select at least one extension.</div>
+        </div>
+
+        <div class="mb-2">
+          <label class="form-label" for="draw_color">Bounding-box colour</label>
+          <div class="d-flex align-items-center gap-3">
+            <input type="color" class="form-control form-control-color" id="draw_color" value="#00ff00"
+                   title="Colour used when drawing detections">
+            <code class="ae-key-preview" id="color-rgb">RGB 0, 255, 0</code>
+          </div>
+          <div class="ae-hint mt-1">Used by the generated <code>draw()</code> method for boxes and labels.</div>
+        </div>
+      </section>
+
+      <!-- ============================================================ 5 -->
+      <section class="wiz-step d-none" data-step="5" role="tabpanel" aria-label="Class mapping">
+        <p class="ae-hint mb-3">
+          Rename the labels your model produces. For example map <code>face</code> to
+          <code>person</code> so downstream pipelines see a consistent vocabulary.
+          Mapping is optional, and it is <strong>only applied by the Ultralytics template</strong>
+          — the other templates store it but do not use it until you write the postprocessing code.
+        </p>
+
+        <div class="d-flex flex-wrap gap-2 mb-3">
+          <button type="button" class="btn btn-sm btn-outline-primary" id="map-load">
+            <i class="fas fa-download me-1"></i>Load labels from selected model
+          </button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="map-add">
+            <i class="fas fa-plus me-1"></i>Add row
+          </button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="map-reset">
+            <i class="fas fa-rotate-left me-1"></i>Reset to source labels
+          </button>
+          <button type="button" class="btn btn-sm btn-outline-danger" id="map-clear">
+            <i class="fas fa-xmark me-1"></i>Clear all
+          </button>
+        </div>
+
+        <div id="map-status" class="small mb-2"></div>
+        <div class="ae-map-list" id="map-list"></div>
+        <div class="text-danger small mt-2 d-none" id="map-err"></div>
+      </section>
+
+      <!-- ============================================================ 6 -->
+      <section class="wiz-step d-none" data-step="6" role="tabpanel" aria-label="Validate and create">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h6 class="mb-0"><i class="fas fa-clipboard-check me-2"></i>Pre-flight checks</h6>
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-revalidate">
+            <i class="fas fa-rotate me-1"></i>Re-run checks
+          </button>
+        </div>
+        <div id="checklist" class="mb-3"></div>
+
+        <h6 class="mb-2"><i class="fas fa-eye me-2"></i>Summary</h6>
+        <div class="ae-summary mb-3" id="summary"></div>
+
+        <div class="accordion mb-3" id="advAccordion">
+          <div class="accordion-item">
+            <h2 class="accordion-header">
+              <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
+                      data-bs-target="#advBody" aria-expanded="false" aria-controls="advBody">
+                <i class="fas fa-terminal me-2"></i>Advanced technical details
+              </button>
+            </h2>
+            <div id="advBody" class="accordion-collapse collapse" data-bs-parent="#advAccordion">
+              <div class="accordion-body">
+                <div class="ae-summary mb-3" id="tech-summary"></div>
+                {% if advanced %}
+                <div class="alert alert-danger py-2 small">
+                  <i class="fas fa-triangle-exclamation me-1"></i>
+                  <strong>Advanced mode is enabled on this node.</strong> Edits you make below are
+                  installed verbatim and executed by the node on import. AST validation is a
+                  correctness check, not a sandbox.
+                </div>
+                <label class="form-label" for="code">Generated source (editable)</label>
+                <textarea class="form-control ae-code" id="code" rows="20" spellcheck="false"></textarea>
+                {% else %}
+                <label class="form-label" for="code-view">Generated source (read-only)</label>
+                <pre class="ae-code" id="code-view" tabindex="0" aria-label="Generated engine source"></pre>
+                <div class="ae-hint mt-1">
+                  The server regenerates this file from your answers at creation time, so what is
+                  installed always matches what is shown here.
+                </div>
+                {% endif %}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="create-progress" class="mb-3 d-none"></div>
+        <div id="create-result" class="mb-3"></div>
+
+        <button class="btn btn-success btn-lg" id="btn-create">
+          <i class="fas fa-circle-plus me-1"></i>Create Engine
+        </button>
+      </section>
+
+      <hr>
+      <div class="d-flex justify-content-between">
+        <button class="btn btn-outline-secondary" id="btn-back">
+          <i class="fas fa-arrow-left me-1"></i>Back
+        </button>
+        <button class="btn btn-primary" id="btn-next">
+          Next<i class="fas fa-arrow-right ms-1"></i>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+/* ===================================================================== *
+ * Create Engine wizard
+ *
+ * Backend truths this wizard is built around (see engine_builder.py):
+ *  - generate_engine_source() reads EXACTLY six keys: display_name, task,
+ *    confidence, extensions (list), draw_color ([r,g,b]), class_map
+ *  - `task` is metadata only; every preset emits the same detection-shaped code
+ *  - only the ultralytics preset produces a working engine; the others install a
+ *    skeleton that loads but returns zero detections
+ *  - confidence + class_map are honoured only by the ultralytics preset
+ *  - there is NO device field; device is chosen at pipeline creation
+ *  - /validate always answers HTTP 200 -> branch on body.valid, never on r.ok
+ *  - default mode ignores any posted `code` and regenerates server-side, so the
+ *    preview is regenerated from the final fields immediately before creating
+ *  - installation is permanent: no delete/rename endpoint exists
+ * ===================================================================== */
+
+const ADVANCED = {{ 'true' if advanced else 'false' }};
+const TOTAL_STEPS = 6;
+
+const STEP_META = [
+    null,
+    { title: 'Purpose',            icon: 'fa-bullseye' },
+    { title: 'Model',              icon: 'fa-cube' },
+    { title: 'Runtime',            icon: 'fa-gears' },
+    { title: 'Outputs',            icon: 'fa-sliders' },
+    { title: 'Class Mapping',      icon: 'fa-tags' },
+    { title: 'Validate & Create',  icon: 'fa-clipboard-check' },
+];
+
+const TASKS = [
+    { id: 'detection',      icon: 'fa-vector-square',   label: 'Detection',
+      desc: 'Reports objects with bounding boxes.' },
+    { id: 'classification', icon: 'fa-tag',             label: 'Classification',
+      desc: 'Reports a label for the whole frame.' },
+    { id: 'segmentation',   icon: 'fa-draw-polygon',    label: 'Segmentation',
+      desc: 'Reports per-pixel or per-region masks.' },
+    { id: 'pose',           icon: 'fa-person-running',  label: 'Pose',
+      desc: 'Reports keypoints for detected subjects.' },
+];
+
+const PRESETS = [
+    { id: 'ultralytics', icon: 'fa-bolt', label: 'Ultralytics YOLO',
+      desc: 'Loads the model with the ultralytics package and returns real detections.',
+      formats: ['.pt'], ready: true,
+      notes: 'Confidence threshold and class mapping are applied. Requires the ultralytics package on the node.' },
+    { id: 'onnx', icon: 'fa-diagram-project', label: 'ONNX Runtime',
+      desc: 'Creates an ONNX Runtime session and leaves the tensor handling to you.',
+      formats: ['.onnx'], ready: false,
+      notes: 'CPU execution provider is hard-coded in the template. Pre/post-processing is a TODO.' },
+    { id: 'opencv_dnn', icon: 'fa-image', label: 'OpenCV DNN',
+      desc: 'Loads the model through cv2.dnn and leaves blob/decoding to you.',
+      formats: ['.onnx', '.pb', '.weights'], ready: false,
+      notes: 'Blob construction, forward pass and decoding are TODOs.' },
+    { id: 'blank', icon: 'fa-file-code', label: 'Blank template',
+      desc: 'A correctly-shaped engine class with every method stubbed out.',
+      formats: [], ready: false,
+      notes: 'For developers who want to write the whole inference path by hand.' },
+];
+
+const COMMON_EXTS = ['.pt', '.onnx', '.engine', '.xml', '.pb', '.weights', '.tflite'];
+
+const state = {
+    displayName: '',
+    task: 'detection',
+    modelId: null,
+    preset: null,
+    confidence: 0.4,
+    extensions: ['.onnx'],
+    color: [0, 255, 0],
+    mapping: [],          // [{src, dst, on}]
+    ackSkeleton: false,
+};
+
+let step = 1;
+let maxStep = 1;
+let existingKeys = [];
+let models = [];
+let hardware = null;
+let created = false;
+let creating = false;
+let codeDirty = false;    // advanced mode only: user hand-edited the source
+let lastPreview = null;   // {code, class_name, engine_key}
+let lastValidation = null;
+
+/* ------------------------------------------------- name / key derivation */
+/* Mirrors engine_builder.class_name_from_display + key_from_class EXACTLY. */
+
+function toClass(display) {
+    const words = (display || '').match(/[A-Za-z0-9]+/g) || [];
+    if (!words.length) return '';
+    let name = words.map(w => w[0].toUpperCase() + w.slice(1)).join('');
+    if (/^[0-9]/.test(name)) name = 'E' + name;
+    if (!name.endsWith('Engine')) name += 'Engine';
+    return name;
+}
+
+function toKey(cls) {
+    const suffixes = ['Engine', 'Inference', 'AI', 'Model'];
+    let s = cls;
+    for (const suf of suffixes) {
+        if (cls.endsWith(suf) && cls.length > suf.length) { s = cls.slice(0, -suf.length); break; }
+    }
+    let out = '';
+    for (let i = 0; i < s.length; i++) {
+        const ch = s[i];
+        if (ch >= 'A' && ch <= 'Z' && i > 0) out += '_';
+        out += ch.toLowerCase();
+    }
+    return out;
+}
+
+function derived() {
+    const cls = toClass(state.displayName);
+    const key = cls ? toKey(cls) : '';
+    return { cls, key, filename: key ? `${key}_engine.py` : '' };
+}
+
+/* The backend refuses filenames in SKIP_NAMES; "Base" is the reachable one. */
+const RESERVED_FILENAMES = ['__init__.py', 'base_engine.py', 'example_engine_template.py'];
+
+/* ------------------------------------------------------ fields for backend */
+
+function buildFields() {
+    const class_map = {};
+    state.mapping.forEach(r => {
+        const src = (r.src || '').trim();
+        const dst = (r.dst || '').trim();
+        if (r.on && src && dst) class_map[src] = dst;
+    });
+    return {
+        display_name: state.displayName.trim(),
+        task: state.task,
+        confidence: state.confidence,
+        extensions: state.extensions.slice(),
+        draw_color: state.color.slice(),
+        class_map,
+    };
+}
+
+/* ------------------------------------------------------------ validation */
+
+function stepProblems(n) {
+    const problems = [];
+    const d = derived();
+    if (n === 1) {
+        if (!state.displayName.trim()) problems.push('Enter an engine name.');
+        else if (!d.cls) problems.push('The name must contain letters or digits.');
+        else if (existingKeys.includes(d.key)) problems.push(`The engine key "${d.key}" is already in use on this node.`);
+        else if (RESERVED_FILENAMES.includes(d.filename)) problems.push(`"${d.filename}" is a reserved engine filename. Choose a different name.`);
+    }
+    if (n === 3) {
+        if (!state.preset) problems.push('Choose a runtime template.');
+        else {
+            const p = PRESETS.find(x => x.id === state.preset);
+            if (p && !p.ready && !state.ackSkeleton) problems.push('Acknowledge that this template installs a skeleton.');
+        }
+    }
+    if (n === 4) {
+        if (!state.extensions.length) problems.push('Select at least one accepted model extension.');
+    }
+    if (n === 5) {
+        const seen = new Set();
+        for (const r of state.mapping) {
+            if (!r.on) continue;
+            const src = (r.src || '').trim();
+            if (!src) continue;
+            if (seen.has(src)) { problems.push(`Duplicate source label "${src}" — each source label may appear once.`); break; }
+            seen.add(src);
+        }
+    }
+    return problems;
+}
+
+function canLeave(n) { return stepProblems(n).length === 0; }
+
+/* ------------------------------------------------------------ navigation */
+
+function renderStepper() {
+    document.querySelectorAll('.ae-step').forEach(btn => {
+        const n = +btn.dataset.step;
+        btn.classList.toggle('is-done', n < step && canLeave(n));
+        if (n === step) btn.setAttribute('aria-current', 'step');
+        else btn.removeAttribute('aria-current');
+        btn.setAttribute('aria-selected', String(n === step));
+        btn.disabled = n > maxStep;
+    });
+}
+
+function showStep(n) {
+    step = Math.min(TOTAL_STEPS, Math.max(1, n));
+    maxStep = Math.max(maxStep, step);
+    document.querySelectorAll('.wiz-step').forEach(s =>
+        s.classList.toggle('d-none', +s.dataset.step !== step));
+    document.getElementById('step-title').innerHTML =
+        `<i class="fas ${STEP_META[step].icon} me-2"></i>${esc(STEP_META[step].title)}`;
+    document.getElementById('step-counter').textContent = `Step ${step} of ${TOTAL_STEPS}`;
+    document.getElementById('btn-back').disabled = step === 1;
+    document.getElementById('btn-next').classList.toggle('d-none', step === TOTAL_STEPS);
+    renderStepper();
+    if (step === 5) renderMapping();
+    if (step === 6) runPreflight();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function goNext() {
+    const problems = stepProblems(step);
+    if (problems.length) {
+        showAlert('warning', esc(problems[0]));
+        if (step === 1) {
+            const el = document.getElementById('display_name');
+            el.classList.add('is-invalid');
+            document.getElementById('name-err').textContent = problems[0];
+            el.focus();
+        }
+        if (step === 4) document.getElementById('ext-err').classList.remove('d-none');
+        return;
+    }
+    showStep(step + 1);
+}
+
+/* ------------------------------------------------------------- step 1 UI */
+
+function renderTasks() {
+    document.getElementById('task-selector').innerHTML = TASKS.map(t => `
+<button type="button" class="button-selector-item ${state.task === t.id ? 'active' : ''}"
+        role="radio" aria-checked="${state.task === t.id}" data-task="${esc(t.id)}">
+  <span class="icon"><i class="fas ${esc(t.icon)}"></i></span>
+  <span class="label">${esc(t.label)}</span>
+  <span class="description">${esc(t.desc)}</span>
+</button>`).join('');
+    document.querySelectorAll('[data-task]').forEach(b => b.addEventListener('click', () => {
+        state.task = b.dataset.task;
+        renderTasks();
+    }));
+}
+
+function updateNamePreview() {
+    const d = derived();
+    document.getElementById('pv-class').textContent = d.cls || '—';
+    document.getElementById('pv-key').textContent = d.key || '—';
+    const uniq = document.getElementById('pv-uniq');
+    if (!d.key) {
+        uniq.textContent = '';
+    } else if (existingKeys.includes(d.key)) {
+        uniq.innerHTML = '<span class="badge bg-danger">key already in use</span>';
+    } else if (RESERVED_FILENAMES.includes(d.filename)) {
+        uniq.innerHTML = '<span class="badge bg-danger">reserved filename</span>';
+    } else {
+        uniq.innerHTML = '<span class="badge bg-success">available</span>';
+    }
+    document.getElementById('display_name').classList.remove('is-invalid');
+}
+
+/* ------------------------------------------------------------- step 2 UI */
+
+function modelFormat(m) { return String(m.file_extension || '').toLowerCase(); }
+
+function renderModels() {
+    const host = document.getElementById('model-list');
+    if (models === null) { host.innerHTML = skeletonBlock(); return; }
+
+    const cards = models.map(m => `
+<button type="button" class="button-selector-item ${state.modelId === m.id ? 'active' : ''}"
+        role="radio" aria-checked="${state.modelId === m.id}" data-model="${esc(m.id)}">
+  <span class="icon"><i class="fas fa-cube"></i></span>
+  <span class="label">${esc(m.name || m.original_filename || m.id)}</span>
+  <span class="description">${esc(modelFormat(m) || 'unknown format')} ·
+    ${esc(formatBytes(m.file_size || 0))} · uploaded for ${esc(m.engine_type || 'unspecified engine')}</span>
+</button>`).join('');
+
+    host.innerHTML = `
+<div class="button-selector ae-wide" role="radiogroup" aria-label="Stored models">
+  <button type="button" class="button-selector-item ${state.modelId === null ? 'active' : ''}"
+          role="radio" aria-checked="${state.modelId === null}" data-model="">
+    <span class="icon"><i class="fas fa-ban"></i></span>
+    <span class="label">No model yet</span>
+    <span class="description">Configure the engine now and upload a model later.</span>
+  </button>
+  ${cards}
+</div>
+${models.length ? '' : '<p class="ae-hint mt-3">No models are stored on this node yet. You can still create the engine and <a href="/models">upload a model</a> afterwards.</p>'}`;
+
+    host.querySelectorAll('[data-model]').forEach(b => b.addEventListener('click', () => {
+        state.modelId = b.dataset.model || null;
+        onModelChanged();
+        renderModels();
+    }));
+}
+
+function selectedModel() {
+    // `models` is null while the list is loading - stay defensive, the wizard
+    // must work whether or not /api/models ever answers.
+    if (!Array.isArray(models) || !state.modelId) return null;
+    return models.find(m => m.id === state.modelId) || null;
+}
+
+function onModelChanged() {
+    const m = selectedModel();
+    if (!m) return;
+    const ext = modelFormat(m);
+    if (ext && !state.extensions.includes(ext)) state.extensions = [ext];
+    // Suggest a runtime, but never silently override an explicit choice.
+    if (!state.preset) {
+        if (ext === '.pt') state.preset = 'ultralytics';
+        else if (ext === '.onnx') state.preset = 'onnx';
+    }
+    state.mapping = [];       // labels belong to the previously selected model
+    renderExtensions();
+    renderPresets();
+}
+
+function skeletonBlock() {
+    return '<span class="ae-skeleton mb-2" style="height:3rem"></span>'.repeat(3);
+}
+
+/* ------------------------------------------------------------- step 3 UI */
+
+function renderPresets() {
+    const m = selectedModel();
+    const ext = m ? modelFormat(m) : null;
+
+    document.getElementById('preset-selector').innerHTML = PRESETS.map(p => {
+        const matches = ext && p.formats.includes(ext);
+        const recommended = p.ready && matches;
+        const badge = p.ready
+            ? '<span class="ae-readiness ready"><i class="fas fa-check"></i>Ready-to-use engine</span>'
+            : (p.id === 'blank'
+                ? '<span class="ae-readiness skeleton"><i class="fas fa-triangle-exclamation"></i>Developer template</span>'
+                : '<span class="ae-readiness skeleton"><i class="fas fa-triangle-exclamation"></i>Skeleton — requires implementation</span>');
+        return `
+<button type="button" class="button-selector-item ${state.preset === p.id ? 'active' : ''} ${recommended ? 'recommended' : ''}"
+        role="radio" aria-checked="${state.preset === p.id}" data-preset="${esc(p.id)}">
+  <span class="icon"><i class="fas ${esc(p.icon)}"></i></span>
+  <span class="label">${esc(p.label)}</span>
+  <span class="description">
+    ${badge}
+    ${matches ? `<span class="badge bg-secondary ms-1">matches ${esc(ext)}</span>` : ''}
+    <br>${esc(p.desc)}<br><em>${esc(p.notes)}</em>
+  </span>
+</button>`;
+    }).join('');
+
+    document.querySelectorAll('[data-preset]').forEach(b => b.addEventListener('click', () => {
+        state.preset = b.dataset.preset;
+        state.ackSkeleton = false;
+        document.getElementById('skeleton-ack').checked = false;
+        renderPresets();
+        updateConfNote();
+    }));
+
+    const p = PRESETS.find(x => x.id === state.preset);
+    document.getElementById('skeleton-ack-box').classList.toggle('d-none', !p || p.ready);
+}
+
+function renderHardware() {
+    const host = document.getElementById('hardware-info');
+    if (!hardware) { host.textContent = 'Hardware information is unavailable.'; return; }
+    const devices = hardware.available_devices || [];
+    const optimal = hardware.optimal_device;
+    host.innerHTML = devices.length
+        ? `Available devices: ${devices.map(d =>
+              `<span class="badge ${d === optimal ? 'bg-success' : 'bg-secondary'} me-1">${esc(d)}</span>`).join('')}
+           ${optimal ? `<div class="mt-1">Default for new pipelines: <code>${esc(optimal)}</code></div>` : ''}`
+        : 'No devices reported by this node.';
+}
+
+/* ------------------------------------------------------------- step 4 UI */
+
+function updateConfNote() {
+    const el = document.getElementById('conf-note');
+    el.innerHTML = state.preset === 'ultralytics'
+        ? 'Applied by the generated engine: detections below this score are dropped.'
+        : 'Stored on the engine as <code>confidence_threshold</code>, but the selected template does not filter by it until you write the postprocessing code.';
+}
+
+function renderExtensions() {
+    const all = Array.from(new Set(COMMON_EXTS.concat(state.extensions)));
+    document.getElementById('ext-chips').innerHTML = all.map(e => `
+<button type="button" class="ae-chip ${state.extensions.includes(e) ? 'active' : ''}"
+        data-ext="${esc(e)}" aria-pressed="${state.extensions.includes(e)}">${esc(e)}</button>`).join('');
+    document.querySelectorAll('[data-ext]').forEach(b => b.addEventListener('click', () => {
+        const e = b.dataset.ext;
+        const i = state.extensions.indexOf(e);
+        if (i >= 0) state.extensions.splice(i, 1); else state.extensions.push(e);
+        document.getElementById('ext-err').classList.toggle('d-none', state.extensions.length > 0);
+        renderExtensions();
+    }));
+}
+
+function normalizeExt(raw) {
+    let e = (raw || '').trim().toLowerCase();
+    if (!e) return null;
+    if (!e.startsWith('.')) e = '.' + e;
+    return /^\.[a-z0-9]{1,10}$/.test(e) ? e : null;
+}
+
+function setColorFromPicker(hex) {
+    const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || '');
+    state.color = m ? [1, 2, 3].map(i => Math.max(0, Math.min(255, parseInt(m[i], 16)))) : [0, 255, 0];
+    document.getElementById('color-rgb').textContent = `RGB ${state.color.join(', ')}`;
+}
+
+/* ------------------------------------------------------------- step 5 UI */
+
+function renderMapping() {
+    const list = document.getElementById('map-list');
+    const err = document.getElementById('map-err');
+
+    if (!state.mapping.length) {
+        list.innerHTML = `<div class="text-center text-muted py-4 small">
+            No label mapping. Detections keep the labels the model reports.</div>`;
+    } else {
+        const counts = {};
+        state.mapping.forEach(r => {
+            if (!r.on) return;
+            const k = (r.src || '').trim();
+            if (k) counts[k] = (counts[k] || 0) + 1;
+        });
+        list.innerHTML = state.mapping.map((r, i) => {
+            const dupe = r.on && counts[(r.src || '').trim()] > 1;
+            return `
+<div class="ae-map-row ${r.on ? '' : 'is-off'} ${dupe ? 'is-dupe' : ''}">
+  <div class="form-check m-0">
+    <input class="form-check-input" type="checkbox" data-map-on="${i}" ${r.on ? 'checked' : ''}
+           aria-label="Include this mapping">
+  </div>
+  <input class="form-control form-control-sm" data-map-src="${i}" value="${esc(r.src)}"
+         placeholder="model label" aria-label="Source label" spellcheck="false">
+  <div class="ae-map-arrow"><i class="fas fa-arrow-right"></i></div>
+  <input class="form-control form-control-sm" data-map-dst="${i}" value="${esc(r.dst)}"
+         placeholder="output label" aria-label="Output label" spellcheck="false">
+  <button type="button" class="btn btn-sm btn-outline-danger" data-map-del="${i}"
+          aria-label="Remove this mapping"><i class="fas fa-xmark"></i></button>
+</div>`;
+        }).join('');
+
+        list.querySelectorAll('[data-map-on]').forEach(el => el.addEventListener('change', () => {
+            state.mapping[+el.dataset.mapOn].on = el.checked; renderMapping();
+        }));
+        list.querySelectorAll('[data-map-src]').forEach(el => el.addEventListener('input', () => {
+            state.mapping[+el.dataset.mapSrc].src = el.value;
+        }));
+        list.querySelectorAll('[data-map-dst]').forEach(el => el.addEventListener('input', () => {
+            state.mapping[+el.dataset.mapDst].dst = el.value;
+        }));
+        list.querySelectorAll('[data-map-del]').forEach(el => el.addEventListener('click', () => {
+            state.mapping.splice(+el.dataset.mapDel, 1); renderMapping();
+        }));
+    }
+
+    const problems = stepProblems(5);
+    err.classList.toggle('d-none', !problems.length);
+    err.textContent = problems[0] || '';
+    document.getElementById('map-load').disabled = !state.modelId;
+}
+
+async function loadLabels() {
+    const m = selectedModel();
+    const status = document.getElementById('map-status');
+    if (!m) { status.innerHTML = '<span class="text-muted">Select a model in step 2 first.</span>'; return; }
+
+    const btn = document.getElementById('map-load');
+    setButtonLoading(btn, true, 'Reading labels…');
+    const res = await apiCall(`/api/models/${encodeURIComponent(m.id)}/labels`);
+    setButtonLoading(btn, false);
+
+    if (!res.ok) {
+        status.innerHTML = `<span class="text-warning"><i class="fas fa-triangle-exclamation me-1"></i>${esc(res.error)}</span>`;
+        return;
+    }
+    const labels = res.data && res.data.labels;
+    if (!labels || !Object.keys(labels).length) {
+        // Honest degradation: the backend refuses to guess, and so do we.
+        status.innerHTML = `<span class="text-warning"><i class="fas fa-circle-info me-1"></i>${
+            esc((res.data && res.data.reason) || 'Labels could not be read safely from this model.')
+        } Add the mappings you need manually.</span>`;
+        return;
+    }
+    state.mapping = Object.keys(labels)
+        .sort((a, b) => (parseInt(a, 10) || 0) - (parseInt(b, 10) || 0))
+        .map(k => ({ src: String(labels[k]), dst: String(labels[k]), on: false }));
+    status.innerHTML = `<span class="text-success"><i class="fas fa-check me-1"></i>Loaded ${
+        Object.keys(labels).length} label(s) from <code>${esc(m.name || m.id)}</code>. Tick the rows you want to rename.</span>`;
+    renderMapping();
+}
+
+/* ------------------------------------------------------------- step 6 UI */
+
+function checkRow(status, title, detail) {
+    return `<div class="ae-check ${status}">
+  <div class="ae-check-icon"><i class="fas ${
+      status === 'pass' ? 'fa-circle-check' : status === 'warn' ? 'fa-triangle-exclamation' : 'fa-circle-xmark'}"></i></div>
+  <div class="ae-check-body">
+    <div class="ae-check-title">${esc(title)}</div>
+    ${detail ? `<div class="ae-check-detail">${detail}</div>` : ''}
+  </div>
+</div>`;
+}
+
+function fixLink(n, label) {
+    return `<button type="button" class="btn btn-link btn-sm p-0 align-baseline" data-fix="${n}">${esc(label)}</button>`;
+}
+
+/** Runs the REAL backend calls: regenerate the source from the final fields,
+ *  then statically validate it. No simulated results. */
+async function runPreflight() {
+    const host = document.getElementById('checklist');
+    host.innerHTML = '<span class="ae-skeleton" style="height:5rem"></span>';
+    lastPreview = null;
+    lastValidation = null;
+
+    const d = derived();
+    const rows = [];
+    let blocking = 0;
+
+    // --- purely local checks -------------------------------------------
+    if (!state.displayName.trim()) {
+        rows.push(checkRow('fail', 'Engine name is missing', fixLink(1, 'Go to step 1'))); blocking++;
+    } else if (existingKeys.includes(d.key)) {
+        rows.push(checkRow('fail', `Engine key "${d.key}" is already in use`, fixLink(1, 'Choose another name'))); blocking++;
+    } else if (RESERVED_FILENAMES.includes(d.filename)) {
+        rows.push(checkRow('fail', `"${d.filename}" is a reserved engine filename`, fixLink(1, 'Choose another name'))); blocking++;
+    } else {
+        rows.push(checkRow('pass', `Engine key "${d.key}" is available`,
+            `Class <code>${esc(d.cls)}</code> · file <code>${esc(d.filename)}</code>`));
+    }
+
+    if (!state.preset) {
+        rows.push(checkRow('fail', 'No runtime template selected', fixLink(3, 'Go to step 3'))); blocking++;
+    } else {
+        const p = PRESETS.find(x => x.id === state.preset);
+        if (p.ready) {
+            rows.push(checkRow('pass', `${p.label} produces a working engine`, esc(p.notes)));
+        } else if (!state.ackSkeleton) {
+            rows.push(checkRow('fail', `${p.label} is a skeleton and has not been acknowledged`, fixLink(3, 'Acknowledge in step 3'))); blocking++;
+        } else {
+            rows.push(checkRow('warn', `${p.label} installs a skeleton`,
+                'The engine will load but return zero detections until the generated TODO sections are completed.'));
+        }
+    }
+
+    if (!state.extensions.length) {
+        rows.push(checkRow('fail', 'No accepted model extensions selected', fixLink(4, 'Go to step 4'))); blocking++;
+    } else {
+        const m = selectedModel();
+        const ext = m ? modelFormat(m) : null;
+        if (ext && !state.extensions.includes(ext)) {
+            rows.push(checkRow('warn', `The selected model's ${ext} files would be rejected`,
+                `Accepted: <code>${esc(state.extensions.join(', '))}</code>. ` + fixLink(4, 'Adjust extensions')));
+        } else {
+            rows.push(checkRow('pass', 'Accepted model extensions set',
+                `<code>${esc(state.extensions.join(', '))}</code>`));
+        }
+    }
+
+    const mapProblems = stepProblems(5);
+    const mapCount = Object.keys(buildFields().class_map).length;
+    if (mapProblems.length) {
+        rows.push(checkRow('fail', mapProblems[0], fixLink(5, 'Go to step 5'))); blocking++;
+    } else if (!mapCount) {
+        rows.push(checkRow('pass', 'No class mapping', 'Detections keep the labels the model reports.'));
+    } else if (state.preset !== 'ultralytics') {
+        rows.push(checkRow('warn', `${mapCount} label mapping(s) stored but not applied`,
+            'Only the Ultralytics template applies class mapping; the others store it for your own code to use.'));
+    } else {
+        rows.push(checkRow('pass', `${mapCount} label mapping(s) will be applied`));
+    }
+
+    // --- backend checks: generate, then statically validate --------------
+    if (blocking) {
+        rows.push(checkRow('fail', 'Source generation skipped', 'Fix the issues above first.'));
+    } else {
+        const gen = await apiCall('/api/inference/engines/preview', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ preset: state.preset, fields: buildFields() }),
+        });
+        if (!gen.ok) {
+            rows.push(checkRow('fail', 'The server could not generate the engine source', esc(gen.error)));
+            blocking++;
+        } else {
+            lastPreview = gen.data;
+            rows.push(checkRow('pass', 'Engine source generated on the server',
+                `${esc(String(gen.data.code || '').split('\n').length)} lines`));
+
+            const codeToCheck = (ADVANCED && codeDirty)
+                ? document.getElementById('code').value
+                : gen.data.code;
+            // NOTE: /validate always answers 200 - branch on body.valid, never r.ok.
+            const val = await apiCall('/api/inference/engines/validate', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code: codeToCheck }),
+            });
+            if (!val.ok) {
+                rows.push(checkRow('fail', 'Could not reach the validator', esc(val.error))); blocking++;
+            } else {
+                lastValidation = val.data;
+                if (val.data.valid) {
+                    rows.push(checkRow('pass', 'Generated source passes static validation',
+                        `Class <code>${esc(val.data.class_name)}</code>, key <code>${esc(val.data.engine_key)}</code>`));
+                } else {
+                    rows.push(checkRow('fail', 'Generated source failed validation',
+                        esc(val.data.error || 'Unknown validation error'))); blocking++;
+                }
+                (val.data.warnings || []).forEach(w => rows.push(checkRow('warn', esc(w))));
+            }
+        }
+    }
+
+    host.innerHTML = (blocking
+        ? `<div class="alert alert-danger py-2"><i class="fas fa-circle-xmark me-1"></i>
+             <strong>Cannot create engine.</strong> ${blocking} issue(s) must be resolved.</div>`
+        : '') + rows.join('');
+
+    host.querySelectorAll('[data-fix]').forEach(b =>
+        b.addEventListener('click', () => showStep(+b.dataset.fix)));
+
+    document.getElementById('btn-create').disabled = blocking > 0 || created;
+    renderSummary();
+}
+
+function summaryItem(label, value, mono) {
+    return `<div class="ae-summary-item">
+      <span class="ae-summary-label">${esc(label)}</span>
+      <span class="ae-summary-value ${mono ? 'mono' : ''}">${value}</span></div>`;
+}
+
+function renderSummary() {
+    const d = derived();
+    const m = selectedModel();
+    const p = PRESETS.find(x => x.id === state.preset);
+    const mapCount = Object.keys(buildFields().class_map).length;
+
+    document.getElementById('summary').innerHTML =
+        summaryItem('Engine name', esc(state.displayName || '—')) +
+        summaryItem('Reported task type', esc(state.task) + ' <span class="ae-hint">(metadata)</span>') +
+        summaryItem('Runtime template', p ? esc(p.label) + (p.ready
+            ? ' <span class="ae-readiness ready">ready</span>'
+            : ' <span class="ae-readiness skeleton">skeleton</span>') : '—') +
+        summaryItem('Model used for setup', m ? esc(m.name || m.original_filename || m.id) : 'none selected') +
+        summaryItem('Accepted extensions', esc(state.extensions.join(', ') || '—'), true) +
+        summaryItem('Confidence threshold', state.confidence.toFixed(2), true) +
+        summaryItem('Box colour', `<span style="display:inline-block;width:.9em;height:.9em;vertical-align:-1px;
+            background:rgb(${state.color.join(',')});border:1px solid var(--border-medium)"></span>
+            RGB ${esc(state.color.join(', '))}`) +
+        summaryItem('Label mappings', mapCount ? `${mapCount} active` : 'none');
+
+    document.getElementById('tech-summary').innerHTML =
+        summaryItem('Python class', esc(d.cls || '—'), true) +
+        summaryItem('Engine key', esc(d.key || '—'), true) +
+        summaryItem('File written', esc(d.filename || '—'), true) +
+        summaryItem('Validator verdict', lastValidation
+            ? (lastValidation.valid ? 'valid' : esc(lastValidation.error || 'invalid'))
+            : 'not run', true);
+
+    const code = (lastPreview && lastPreview.code) || '';
+    if (ADVANCED) {
+        const ta = document.getElementById('code');
+        if (ta && !codeDirty) ta.value = code;
+    } else {
+        const pre = document.getElementById('code-view');
+        if (pre) pre.textContent = code;   // textContent: never an HTML sink
+    }
+}
+
+/* ------------------------------------------------------------- creation */
+
+function stageList(stages) {
+    return stages.map(s => `<div class="ae-stage ${s.status}">
+      <i class="fas ${s.status === 'done' ? 'fa-circle-check'
+                    : s.status === 'failed' ? 'fa-circle-xmark'
+                    : s.status === 'active' ? 'fa-spinner fa-spin' : 'fa-circle'}"></i>
+      <span>${esc(s.label)}</span></div>`).join('');
+}
+
+async function createEngine() {
+    if (creating || created) return;
+    creating = true;
+
+    const btn = document.getElementById('btn-create');
+    const progress = document.getElementById('create-progress');
+    const result = document.getElementById('create-result');
+    result.innerHTML = '';
+    progress.classList.remove('d-none');
+    setButtonLoading(btn, true, 'Creating…');
+
+    // Stages are marked done ONLY when the backend confirms them.
+    const stages = [
+        { label: 'Regenerating engine source from your answers', status: 'active' },
+        { label: 'Validating the generated source', status: 'pending' },
+        { label: 'Installing the engine and registering it with the factory', status: 'pending' },
+    ];
+    const paint = () => { progress.innerHTML = stageList(stages); };
+    paint();
+
+    const finish = (ok) => {
+        creating = false;
+        setButtonLoading(btn, false);
+        btn.disabled = ok;
+        paint();
+    };
+
+    // 1. Regenerate from the EXACT fields we are about to submit, so the source we
+    //    showed is the source that gets installed (default mode regenerates anyway).
+    const gen = await apiCall('/api/inference/engines/preview', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preset: state.preset, fields: buildFields() }),
+    });
+    if (!gen.ok) {
+        stages[0].status = 'failed';
+        result.innerHTML = `<div class="alert alert-danger"><strong>Could not generate the engine source.</strong><br>${esc(gen.error)}</div>`;
+        return finish(false);
+    }
+    stages[0].status = 'done'; stages[1].status = 'active'; paint();
+    lastPreview = gen.data;
+
+    const source = (ADVANCED && codeDirty) ? document.getElementById('code').value : gen.data.code;
+
+    // 2. Static validation (always HTTP 200 -> read body.valid).
+    const val = await apiCall('/api/inference/engines/validate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: source }),
+    });
+    if (!val.ok || !val.data || !val.data.valid) {
+        stages[1].status = 'failed';
+        const why = val.ok ? (val.data && val.data.error) || 'The source is not a valid engine.' : val.error;
+        result.innerHTML = `<div class="alert alert-danger"><strong>Validation failed — nothing was installed.</strong><br>${esc(why)}</div>`;
+        return finish(false);
+    }
+    lastValidation = val.data;
+    stages[1].status = 'done'; stages[2].status = 'active'; paint();
+
+    // 3. Install. Advanced mode is the only mode where `code` is honoured.
+    const payload = { preset: state.preset, fields: buildFields() };
+    if (ADVANCED && codeDirty) payload.code = source;
+
+    const res = await apiCall('/api/inference/engines', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+        stages[2].status = 'failed';
+        const msg = res.error || '';
+        // Structured server state - never text matching (the wording may change).
+        const quarantined = !!(res.data && res.data.quarantined) || (res.data && res.data.state === 'FAILED' && /quarantin/i.test(msg));
+        result.innerHTML = quarantined
+            ? `<div class="alert alert-danger">
+                 <h6 class="mb-1"><i class="fas fa-shield-halved me-1"></i>Rediscovery failed — engine quarantined</h6>
+                 <p class="mb-1 small">The file was written but the factory could not load it, so the node moved it aside
+                    (<code>.quarantine</code>) and rolled back. <strong>No engine was registered.</strong></p>
+                 <p class="mb-0 small">Details: ${esc(msg)}</p>
+                 <p class="mb-0 small mt-2">Retrying is safe. If it keeps failing, check the node logs.</p>
+               </div>`
+            : `<div class="alert alert-danger">
+                 <h6 class="mb-1"><i class="fas fa-circle-xmark me-1"></i>Engine installation failed</h6>
+                 <p class="mb-0 small">${esc(msg)}</p>
+               </div>`;
+        showAlert('error', esc(msg || 'Engine installation failed'), 0);
+        return finish(false);
+    }
+
+    stages[2].status = 'done';
+    created = true;
+    const info = (res.data && res.data.engine) || {};
+    const meta = (res.data && res.data.metadata) || null;
+    const depsOk = meta ? meta.available !== false : null;
+
+    result.innerHTML = `
+<div class="alert alert-success">
+  <h6 class="mb-2"><i class="fas fa-circle-check me-1"></i>Engine installed and registered</h6>
+  <div class="ae-summary mb-2">
+    ${summaryItem('Engine key', esc(info.engine_key || '—'), true)}
+    ${summaryItem('Class', esc(info.class_name || '—'), true)}
+    ${summaryItem('File', esc(info.filename || '—'), true)}
+    ${summaryItem('SHA-256', esc(String(info.sha256 || '').slice(0, 16) + '…'), true)}
+  </div>
+  ${meta === null
+    ? '<p class="small mb-2"><i class="fas fa-circle-info me-1"></i>The factory accepted the engine but returned no metadata for it.</p>'
+    : depsOk
+      ? '<p class="small mb-2"><i class="fas fa-check me-1"></i>The engine reports its dependencies are satisfied on this node.</p>'
+      : '<p class="small mb-2"><i class="fas fa-triangle-exclamation me-1"></i>The engine reports that its dependencies are <strong>not</strong> available on this node. Custom engines do not report which package is missing — check the node logs and the imports in the generated file.</p>'}
+  <p class="small mb-2 text-warning"><i class="fas fa-lock me-1"></i>
+    This engine is permanent: there is no delete or rename endpoint on this node.</p>
+  <div class="d-flex flex-wrap gap-2">
+    <a class="btn btn-sm btn-primary" href="/models"><i class="fas fa-upload me-1"></i>Upload a model</a>
+    <a class="btn btn-sm btn-outline-secondary" href="/pipeline-builder"><i class="fas fa-project-diagram me-1"></i>Build a pipeline</a>
+    <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-another"><i class="fas fa-plus me-1"></i>Create another</button>
+  </div>
+</div>`;
+    document.getElementById('btn-another').addEventListener('click', () => window.location.reload());
+    showAlert('success', 'Engine created');
+    finish(true);
+    loadEngineKeys();
+}
+
+/* --------------------------------------------------------------- loading */
+
+async function loadEngineKeys() {
+    // Loaded once (and after a successful create). NOT polled: this endpoint
+    // instantiates every registered engine to report availability.
+    const res = await apiCall('/api/inference/engines');
+    if (res.ok && res.data) {
+        existingKeys = (res.data.engine_types || []).map(e => e.type || e).filter(Boolean);
+    }
+    updateNamePreview();
+}
+
+async function loadModels() {
+    models = null;
+    renderModels();
+    const res = await apiCall('/api/models');
+    if (!res.ok) {
+        models = [];
+        document.getElementById('model-list').innerHTML =
+            `<div class="alert alert-warning py-2 small">Could not load stored models: ${esc(res.error)}
+             You can still create the engine without selecting one.</div>`;
+        return;
+    }
+    // /api/models returns a DICT keyed by model id.
+    models = Object.values((res.data && res.data.models) || {});
+    renderModels();
+}
+
+async function loadHardware() {
+    const res = await apiCall('/api/hardware');
+    hardware = res.ok ? res.data : null;
+    renderHardware();
+}
+
+/* ------------------------------------------------------------------ init */
+
+document.addEventListener('DOMContentLoaded', () => {
+    renderTasks();
+    renderPresets();
+    renderExtensions();
+    updateConfNote();
+    setColorFromPicker(document.getElementById('draw_color').value);
+    showStep(1);
+
+    document.getElementById('display_name').addEventListener('input', ev => {
+        state.displayName = ev.target.value;
+        updateNamePreview();
+    });
+
+    document.getElementById('confidence').addEventListener('input', ev => {
+        state.confidence = parseFloat(ev.target.value);
+        document.getElementById('conf-val').textContent = state.confidence.toFixed(2);
+    });
+
+    document.getElementById('draw_color').addEventListener('input', ev => setColorFromPicker(ev.target.value));
+
+    document.getElementById('ext-add').addEventListener('click', () => {
+        const input = document.getElementById('ext-custom');
+        const e = normalizeExt(input.value);
+        if (!e) { showAlert('warning', 'Enter an extension like .tflite'); return; }
+        if (!state.extensions.includes(e)) state.extensions.push(e);
+        input.value = '';
+        document.getElementById('ext-err').classList.add('d-none');
+        renderExtensions();
+    });
+    document.getElementById('ext-custom').addEventListener('keydown', ev => {
+        if (ev.key === 'Enter') { ev.preventDefault(); document.getElementById('ext-add').click(); }
+    });
+
+    document.getElementById('skeleton-ack').addEventListener('change', ev => {
+        state.ackSkeleton = ev.target.checked;
+    });
+
+    document.getElementById('map-load').addEventListener('click', loadLabels);
+    document.getElementById('map-add').addEventListener('click', () => {
+        state.mapping.push({ src: '', dst: '', on: true }); renderMapping();
+    });
+    document.getElementById('map-reset').addEventListener('click', () => {
+        state.mapping.forEach(r => { r.dst = r.src; r.on = false; }); renderMapping();
+    });
+    document.getElementById('map-clear').addEventListener('click', async () => {
+        if (!state.mapping.length) return;
+        const ok = await confirmDialog({
+            title: 'Clear all label mappings?',
+            body: 'Every row below will be removed. You can reload labels from the model afterwards.',
+            confirmLabel: 'Clear all', variant: 'danger',
+        });
+        if (ok) { state.mapping = []; renderMapping(); }
+    });
+
+    document.getElementById('btn-next').addEventListener('click', goNext);
+    document.getElementById('btn-back').addEventListener('click', () => showStep(step - 1));
+    document.getElementById('btn-revalidate').addEventListener('click', runPreflight);
+    document.getElementById('btn-create').addEventListener('click', createEngine);
+    document.querySelectorAll('.ae-step').forEach(b =>
+        b.addEventListener('click', () => { if (!b.disabled) showStep(+b.dataset.step); }));
+
+    if (ADVANCED) {
+        const ta = document.getElementById('code');
+        if (ta) ta.addEventListener('input', () => { codeDirty = true; });
+    }
+
+    // Warn before losing wizard state (but not after a successful create).
+    window.addEventListener('beforeunload', ev => {
+        if (created || !state.displayName.trim()) return;
+        ev.preventDefault();
+        ev.returnValue = '';
+    });
+
+    loadEngineKeys();
+    loadModels();
+    loadHardware();
+});
+</script>
+{% endblock %}

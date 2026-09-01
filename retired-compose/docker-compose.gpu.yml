@@ -1,0 +1,21 @@
+# GPU overlay - applied automatically by scripts/detect-compute.* when an NVIDIA
+# GPU is present. Grants the VMS container access to the host GPUs.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+#
+# Requires the NVIDIA Container Toolkit on the host.
+services:
+  infernode:
+    build:
+      args:
+        COMPUTE: gpu
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

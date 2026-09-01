@@ -1,0 +1,75 @@
+# Core dependencies
+flask>=2.0.0
+waitress>=2.1.0
+psutil>=5.8.0
+paho-mqtt>=1.6.0
+requests>=2.25.0
+zeroconf>=0.132.0  # mDNS/Bonjour service discovery
+python-dotenv>=1.0  # load .env at startup (e.g. WEBHOOK_AUTH_TOKEN) when run outside Docker
+
+# Auth / shared-database (reuses FACE_DETECTOR's PostgreSQL users)
+SQLAlchemy>=2.0
+psycopg2-binary>=2.9  # sync Postgres driver for Flask
+bcrypt>=4.0           # verify FACE_DETECTOR's bcrypt password hashes
+Flask-Login>=0.6
+Flask-WTF>=1.2        # CSRF for the login form
+# Dedicated at-rest encryption for publisher/telemetry secrets stored in PostgreSQL
+# (config_secrets.py). Exact pin: offline builds must not drift.
+cryptography==44.0.1
+Flask-Limiter>=3.5    # login brute-force rate limiting
+alembic>=1.13         # ArmyEye-owned tables (armeye_*) migrations
+
+# FrameSource package from GitHub (PEP 508 syntax).
+#
+# PINNED to a tag on purpose. Tracking the default branch meant a rebuild silently
+# moved 0.2.7 -> 0.3.0, which renamed the package (frame_source -> framesource) and
+# removed the module-level get_available_sources() helper. /api/frame-sources caught
+# the ImportError and fell back to a hardcoded "basic sources" list, which is what the
+# Pipeline Builder was reporting. inference_node._collect_frame_source_types() now
+# supports both APIs, but the version must still not move without a deliberate bump.
+FrameSource[full] @ git+https://github.com/olkham/FrameSource.git@v0.3.0
+
+# Intel OpenVINO runtime.
+#
+# REQUIRED, not optional: ultralytics_engine routes EVERY intel:* device (including
+# intel:cpu) through an OpenVINO IR model, and hardware_detector prefers
+# openvino.Core().available_devices for device enumeration. Without it the container
+# fell back to a legacy probe that shells out to `lspci` - which is not installed in
+# the image - so the node advertised intel:cpu while being unable to execute on it.
+# The host venv has had openvino 2025.4.0 all along; this restores parity.
+openvino>=2024.0.0
+
+# Computer vision dependencies
+opencv-python>=4.5.0
+numpy>=1.21.0
+Pillow>=8.0.0
+
+# AI/ML frameworks
+ultralytics>=8.0.0
+# Tracker linear assignment. REQUIRED by every Ultralytics tracker (botsort,
+# bytetrack, ocsort all go through matching.linear_assignment); without it
+# model.track() degrades to plain detection with boxes.id=None -> track_id=None
+# -> unique-person counting reports 0. Ultralytics only auto-installs it at
+# runtime, which is impossible offline and vanishes on container recreation.
+# Exact pin: proven against ultralytics 8.3.x; offline builds must not drift.
+lap==0.5.12
+# NOTE: torch / torchvision / onnxruntime are NOT pinned here - they are hardware
+# specific and come from requirements-cpu.txt or requirements-gpu.txt, selected
+# automatically (see scripts/detect-compute.*, COMPUTE build arg). Install the
+# variant file FIRST so ultralytics resolves against the right torch build.
+# Note: Bot-SORT (built into Ultralytics) is used instead of standalone strongsort;
+# it needs the `lap` package above for its assignment step (as do the fallbacks).
+# Performance: Bot-SORT ≈ StrongSORT > OCSORT > ByteTrack
+# geti-sdk>=2.11.0  # DISABLED: Requires Python 3.10-3.13, install separately if needed
+# To install geti-sdk: pip install "geti-sdk>=2.11.0" (only on Python 3.10-3.13)
+
+# GPU monitoring (optional) - uses newer nvidia-ml-py instead of deprecated pynvml
+nvidia-ml-py>=12.0.0
+
+# Serial communication (optional)
+pyserial>=3.5
+
+# Development dependencies
+pytest>=6.0.0
+black>=21.0.0
+flake8>=3.9.0

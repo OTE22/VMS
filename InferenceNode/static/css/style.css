@@ -1,0 +1,1531 @@
+/* ============================================
+   TACTICAL INTELLIGENCE SYSTEM
+   Military-Grade UI - Maximum Readability
+   Classification: UNCLASSIFIED
+   ============================================ */
+
+/* ============================================
+   TACTICAL COLOR SYSTEM
+   ============================================ */
+:root {
+    /* Tactical Base Colors */
+    --tactical-black: #0a0e14;
+    --tactical-dark: #141922;
+    --tactical-gray-900: #1a1f2e;
+    --tactical-gray-800: #252b3b;
+    --tactical-gray-700: #2f3649;
+    --tactical-gray-600: #3d4452;
+    --tactical-gray-500: #525866;
+    --tactical-gray-400: #6b7280;
+    --tactical-gray-300: #9ca3af;
+    --tactical-gray-200: #d1d5db;
+    --tactical-gray-100: #e5e7eb;
+
+    /* Tactical Accent Colors */
+    --tactical-green: #00ff41;
+    --tactical-green-dim: #00cc33;
+    --tactical-green-dark: #009926;
+    --tactical-amber: #ffb000;
+    --tactical-amber-dim: #ff9500;
+    --tactical-red: #ff3838;
+    --tactical-red-dim: #cc0000;
+    --tactical-blue: #00d9ff;
+    --tactical-blue-dim: #0099cc;
+    --tactical-purple: #bd00ff;
+    --tactical-cyan: #00ffcc;
+
+    /* Semantic Colors - Military Grade */
+    --color-operational: var(--tactical-green);
+    --color-standby: var(--tactical-amber);
+    --color-alert: var(--tactical-red);
+    --color-intel: var(--tactical-blue);
+    --color-classified: var(--tactical-purple);
+
+    /* Text Colors - MAXIMUM CONTRAST */
+    --text-primary: #f0f4f8;
+    --text-secondary: #d1d9e2;
+    --text-tertiary: #b4bcc7;
+    --text-muted: #9ca6b3;
+    --text-inverse: #0a0e14;
+    --text-tactical: var(--tactical-green);
+    --text-amber: var(--tactical-amber);
+    --text-alert: var(--tactical-red);
+
+    /* Background Colors - Deep Tactical */
+    --bg-primary: var(--tactical-black);
+    --bg-secondary: var(--tactical-dark);
+    --bg-tertiary: var(--tactical-gray-900);
+    --bg-elevated: var(--tactical-gray-800);
+    --bg-panel: var(--tactical-gray-700);
+    --bg-overlay: rgba(10, 14, 20, 0.95);
+
+    /* Border Colors - Tactical Grid */
+    --border-tactical: rgba(0, 255, 65, 0.3);
+    --border-light: rgba(156, 166, 179, 0.15);
+    --border-medium: rgba(156, 166, 179, 0.25);
+    --border-strong: rgba(156, 166, 179, 0.4);
+    --border-grid: rgba(0, 255, 65, 0.08);
+
+    /* Shadows - Tactical Depth */
+    --shadow-tactical: 0 0 20px rgba(0, 255, 65, 0.1);
+    --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.5);
+    --shadow-lg: 0 8px 16px rgba(0, 0, 0, 0.6);
+    --shadow-xl: 0 12px 24px rgba(0, 0, 0, 0.7);
+    --shadow-glow: 0 0 30px rgba(0, 255, 65, 0.2);
+
+    /* Grid Effect */
+    --grid-pattern: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 1px,
+        rgba(0, 255, 65, 0.03) 1px,
+        rgba(0, 255, 65, 0.03) 2px
+    );
+
+    /* Border Radius - Tactical Angular */
+    --radius-sm: 0.25rem;
+    --radius-md: 0.375rem;
+    --radius-lg: 0.5rem;
+    --radius-xl: 0.625rem;
+
+    /* Spacing */
+    --space-xs: 0.25rem;
+    --space-sm: 0.5rem;
+    --space-md: 1rem;
+    --space-lg: 1.5rem;
+    --space-xl: 2rem;
+    --space-2xl: 3rem;
+
+    /* Typography - Military Spec */
+    --font-sans: 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', system-ui, -apple-system, sans-serif;
+    --font-mono: 'SF Mono', 'Consolas', 'Monaco', 'Courier New', monospace;
+    --font-tactical: 'Segoe UI', 'Arial Narrow', 'Liberation Sans Narrow', sans-serif;
+
+    /* Font Weights */
+    --font-light: 300;
+    --font-normal: 400;
+    --font-medium: 500;
+    --font-semibold: 600;
+    --font-bold: 700;
+    --font-extrabold: 800;
+
+    /* Transitions */
+    --transition-fast: 120ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-slow: 300ms cubic-bezier(0.4, 0, 0.2, 1);
+
+    /* Z-Index */
+    --z-base: 1;
+    --z-dropdown: 1000;
+    --z-sticky: 1020;
+    --z-fixed: 1030;
+    --z-modal-backdrop: 1040;
+    --z-modal: 1050;
+    --z-popover: 1060;
+    --z-tooltip: 1070;
+}
+
+/* ============================================
+   BASE FOUNDATION
+   ============================================ */
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+html {
+    font-size: 16px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+}
+
+body {
+    font-family: var(--font-sans);
+    font-size: 1rem;
+    line-height: 1.6;
+    color: var(--text-primary);
+    background: var(--bg-primary);
+    background-image: var(--grid-pattern);
+    background-size: 2px 2px;
+    min-height: 100vh;
+    position: relative;
+}
+
+body::before {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: radial-gradient(ellipse at center, rgba(0, 255, 65, 0.03) 0%, transparent 70%);
+    pointer-events: none;
+    z-index: 0;
+}
+
+/* ============================================
+   TYPOGRAPHY - TACTICAL CLARITY
+   ============================================ */
+h1, h2, h3, h4, h5, h6 {
+    margin: 0 0 var(--space-md) 0;
+    font-weight: var(--font-bold);
+    line-height: 1.2;
+    color: var(--text-primary);
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    font-family: var(--font-tactical);
+}
+
+h1 {
+    font-size: 2.5rem;
+    font-weight: var(--font-extrabold);
+    color: var(--tactical-green);
+    text-shadow: 0 0 20px rgba(0, 255, 65, 0.3);
+}
+
+h2 {
+    font-size: 2rem;
+    font-weight: var(--font-bold);
+    color: var(--text-primary);
+    border-bottom: 2px solid var(--border-tactical);
+    padding-bottom: 0.5rem;
+}
+
+h3 {
+    font-size: 1.75rem;
+    font-weight: var(--font-bold);
+}
+
+h4 {
+    font-size: 1.5rem;
+    font-weight: var(--font-semibold);
+}
+
+h5 {
+    font-size: 1.25rem;
+    font-weight: var(--font-semibold);
+    color: var(--tactical-green);
+}
+
+h6 {
+    font-size: 1.125rem;
+    font-weight: var(--font-semibold);
+}
+
+p {
+    margin: 0 0 var(--space-md) 0;
+    color: var(--text-secondary);
+    line-height: 1.7;
+    font-size: 1rem;
+}
+
+strong, b {
+    font-weight: var(--font-bold);
+    color: var(--text-primary);
+}
+
+small, .small {
+    font-size: 0.875rem;
+    color: var(--text-tertiary);
+}
+
+/* Text Utilities */
+.text-primary { color: var(--text-primary) !important; }
+.text-secondary { color: var(--text-secondary) !important; }
+.text-tertiary { color: var(--text-tertiary) !important; }
+.text-muted { color: var(--text-muted) !important; }
+.text-tactical { color: var(--tactical-green) !important; font-weight: var(--font-semibold); }
+.text-amber { color: var(--tactical-amber) !important; font-weight: var(--font-semibold); }
+.text-alert { color: var(--tactical-red) !important; font-weight: var(--font-semibold); }
+
+.text-success { color: var(--tactical-green) !important; font-weight: var(--font-semibold); }
+.text-warning { color: var(--tactical-amber) !important; font-weight: var(--font-semibold); }
+.text-danger { color: var(--tactical-red) !important; font-weight: var(--font-semibold); }
+.text-info { color: var(--tactical-blue) !important; font-weight: var(--font-semibold); }
+
+/* ============================================
+   NAVIGATION - COMMAND CENTER
+   ============================================ */
+.navbar {
+    background: linear-gradient(180deg, var(--tactical-gray-900) 0%, var(--tactical-gray-800) 100%);
+    backdrop-filter: blur(10px);
+    border-bottom: 2px solid var(--border-tactical);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6), 0 0 40px rgba(0, 255, 65, 0.1);
+    padding: 1rem 1.5rem;
+    position: sticky;
+    top: 0;
+    z-index: var(--z-sticky);
+}
+
+.navbar::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--tactical-green), transparent);
+    opacity: 0.3;
+}
+
+.navbar-brand {
+    font-weight: var(--font-extrabold);
+    font-size: 1.5rem;
+    color: var(--tactical-green) !important;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    text-shadow: 0 0 10px rgba(0, 255, 65, 0.5);
+    font-family: var(--font-tactical);
+    transition: all var(--transition-fast);
+}
+
+.navbar-brand:hover {
+    color: var(--tactical-green) !important;
+    text-shadow: 0 0 20px rgba(0, 255, 65, 0.8);
+    transform: scale(1.02);
+}
+
+.navbar-brand i {
+    color: var(--tactical-green);
+    text-shadow: 0 0 10px rgba(0, 255, 65, 0.5);
+}
+
+.navbar-dark,
+.bg-primary {
+    background: linear-gradient(180deg, var(--tactical-gray-900) 0%, var(--tactical-gray-800) 100%) !important;
+}
+
+.navbar-nav .nav-link {
+    color: var(--text-secondary) !important;
+    font-weight: var(--font-medium);
+    font-size: 0.9375rem;
+    padding: 0.625rem 1rem !important;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    transition: all var(--transition-fast);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    position: relative;
+}
+
+.navbar-nav .nav-link::before {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0;
+    height: 2px;
+    background: var(--tactical-green);
+    transition: width var(--transition-base);
+}
+
+.navbar-nav .nav-link:hover {
+    color: var(--tactical-green) !important;
+    background: rgba(0, 255, 65, 0.05);
+    border-color: rgba(0, 255, 65, 0.2);
+}
+
+.navbar-nav .nav-link:hover::before {
+    width: 80%;
+}
+
+.navbar-nav .nav-link.active {
+    color: var(--tactical-green) !important;
+    background: rgba(0, 255, 65, 0.1);
+    border-color: var(--tactical-green);
+    font-weight: var(--font-semibold);
+}
+
+.navbar-text {
+    color: var(--text-primary) !important;
+}
+
+.navbar-toggler {
+    border-color: var(--border-tactical);
+}
+
+.navbar-toggler-icon {
+    filter: brightness(0) invert(1);
+}
+
+.dropdown-menu {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-tactical);
+    box-shadow: var(--shadow-lg);
+    border-radius: var(--radius-md);
+    /* State the layer explicitly using the design token (it was declared but unused).
+       Note this only helps when no ancestor traps the menu in its own stacking
+       context - see .ae-menu-safe in armyeye-admin.css. */
+    z-index: var(--z-dropdown);
+}
+
+.dropdown-item {
+    color: var(--text-secondary) !important;
+    padding: 0.75rem 1.25rem;
+    transition: all var(--transition-fast);
+}
+
+.dropdown-item:hover {
+    background: rgba(0, 255, 65, 0.1);
+    color: var(--tactical-green) !important;
+}
+
+.dropdown-item.text-danger {
+    color: var(--tactical-red) !important;
+}
+
+.dropdown-item.text-danger:hover {
+    background: rgba(255, 56, 56, 0.1);
+    color: var(--tactical-red) !important;
+}
+
+.dropdown-divider {
+    border-color: var(--border-medium);
+}
+
+/* ============================================
+   CARDS - TACTICAL PANELS
+   ============================================ */
+.card {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-tactical);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md), inset 0 0 30px rgba(0, 255, 65, 0.02);
+    transition: all var(--transition-base);
+    overflow: hidden;
+    position: relative;
+}
+
+.card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--tactical-green), transparent);
+    opacity: 0.5;
+}
+
+.card:hover {
+    transform: translateY(-4px);
+    box-shadow: var(--shadow-xl), var(--shadow-glow), inset 0 0 40px rgba(0, 255, 65, 0.04);
+    border-color: var(--tactical-green);
+}
+
+.card-glass {
+    background: rgba(37, 43, 59, 0.7);
+    backdrop-filter: blur(20px);
+    border: 1px solid var(--border-tactical);
+}
+
+.card-header {
+    background: linear-gradient(135deg, var(--tactical-gray-800) 0%, var(--tactical-gray-700) 100%);
+    border-bottom: 1px solid var(--border-tactical);
+    padding: 1.25rem 1.5rem;
+    font-weight: var(--font-bold);
+    color: var(--tactical-green);
+    font-size: 1.125rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+}
+
+.card-header h5,
+.card-header .card-title {
+    color: var(--tactical-green) !important;
+    font-weight: var(--font-bold);
+    margin: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.card-body {
+    padding: 1.5rem;
+    color: var(--text-secondary);
+    position: relative;
+    z-index: 1;
+}
+
+.card-title {
+    color: var(--text-primary);
+    font-weight: var(--font-bold);
+    font-size: 1.125rem;
+    text-transform: uppercase;
+}
+
+.card-subtitle {
+    color: var(--text-tertiary);
+    font-weight: var(--font-medium);
+    font-size: 0.9375rem;
+}
+
+.card-text {
+    color: var(--text-secondary);
+    line-height: 1.7;
+}
+
+/* System Overview Cards */
+.system-overview-card {
+    height: 160px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, var(--tactical-gray-800) 0%, var(--tactical-gray-700) 100%);
+}
+
+.system-overview-card .card-body {
+    text-align: center;
+}
+
+.status-box {
+    height: 160px;
+    border: 1px solid var(--border-tactical);
+}
+
+/* ============================================
+   PERFORMANCE CARDS - TACTICAL DISPLAY
+   ============================================ */
+.performance-card {
+    background: linear-gradient(135deg, var(--tactical-gray-800) 0%, var(--tactical-black) 100%);
+    border: 2px solid var(--tactical-green);
+    color: var(--text-primary);
+    position: relative;
+    overflow: hidden;
+    box-shadow: var(--shadow-lg), 0 0 40px rgba(0, 255, 65, 0.2);
+}
+
+.performance-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: radial-gradient(ellipse at top right, rgba(0, 255, 65, 0.1) 0%, transparent 60%);
+    pointer-events: none;
+}
+
+.performance-card::after {
+    content: '';
+    position: absolute;
+    top: -50%;
+    right: -50%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(45deg, transparent, rgba(0, 255, 65, 0.05), transparent);
+    transform: rotate(45deg);
+    animation: scan 3s linear infinite;
+}
+
+@keyframes scan {
+    0% { transform: translateX(-100%) rotate(45deg); }
+    100% { transform: translateX(100%) rotate(45deg); }
+}
+
+.performance-card .card-body {
+    text-align: center;
+    padding: 2rem;
+    position: relative;
+    z-index: 1;
+}
+
+.performance-card h4 {
+    font-size: 3rem;
+    font-weight: var(--font-extrabold);
+    color: var(--tactical-green);
+    text-shadow: 0 0 30px rgba(0, 255, 65, 0.5);
+    margin-bottom: 0.5rem;
+    font-family: var(--font-mono);
+}
+
+.performance-card p {
+    color: var(--text-primary);
+    font-weight: var(--font-semibold);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 1rem;
+}
+
+/* ============================================
+   BUTTONS - TACTICAL CONTROLS
+   ============================================ */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1.5rem;
+    font-size: 0.9375rem;
+    font-weight: var(--font-semibold);
+    line-height: 1.5;
+    border-radius: var(--radius-sm);
+    border: 2px solid transparent;
+    transition: all var(--transition-base);
+    cursor: pointer;
+    text-decoration: none;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    position: relative;
+    overflow: hidden;
+}
+
+.btn::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0;
+    height: 0;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    transition: width 0.3s, height 0.3s;
+}
+
+.btn:hover::before {
+    width: 300px;
+    height: 300px;
+}
+
+.btn:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-lg);
+}
+
+.btn:active {
+    transform: translateY(0);
+}
+
+.btn-primary,
+.bg-primary {
+    background: linear-gradient(135deg, var(--tactical-green-dark) 0%, var(--tactical-green) 100%);
+    color: var(--tactical-black) !important;
+    border-color: var(--tactical-green);
+    font-weight: var(--font-bold);
+    box-shadow: 0 0 20px rgba(0, 255, 65, 0.3);
+}
+
+.btn-primary:hover,
+.bg-primary:hover {
+    background: linear-gradient(135deg, var(--tactical-green) 0%, var(--tactical-green-dim) 100%);
+    box-shadow: 0 0 30px rgba(0, 255, 65, 0.5), var(--shadow-lg);
+    border-color: var(--tactical-green);
+}
+
+.btn-success,
+.bg-success {
+    background: linear-gradient(135deg, var(--tactical-green-dark) 0%, var(--tactical-green) 100%);
+    color: var(--tactical-black) !important;
+    border-color: var(--tactical-green);
+}
+
+.btn-success:hover {
+    box-shadow: 0 0 25px rgba(0, 255, 65, 0.4);
+}
+
+.btn-danger,
+.bg-danger {
+    background: linear-gradient(135deg, var(--tactical-red-dim) 0%, var(--tactical-red) 100%);
+    color: #ffffff !important;
+    border-color: var(--tactical-red);
+}
+
+.btn-danger:hover {
+    box-shadow: 0 0 25px rgba(255, 56, 56, 0.4);
+}
+
+.btn-warning,
+.bg-warning {
+    background: linear-gradient(135deg, var(--tactical-amber-dim) 0%, var(--tactical-amber) 100%);
+    color: var(--tactical-black) !important;
+    border-color: var(--tactical-amber);
+}
+
+.btn-warning:hover {
+    box-shadow: 0 0 25px rgba(255, 176, 0, 0.4);
+}
+
+.btn-info,
+.bg-info {
+    background: linear-gradient(135deg, var(--tactical-blue-dim) 0%, var(--tactical-blue) 100%);
+    color: var(--tactical-black) !important;
+    border-color: var(--tactical-blue);
+}
+
+.btn-outline-primary {
+    background: transparent;
+    color: var(--tactical-green);
+    border-color: var(--tactical-green);
+}
+
+.btn-outline-primary:hover {
+    background: var(--tactical-green);
+    color: var(--tactical-black);
+}
+
+.btn-close {
+    filter: brightness(0) invert(1);
+}
+
+/* ============================================
+   BUTTON SELECTOR - TACTICAL CHOICE
+   ============================================ */
+.button-selector {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 1rem;
+    margin-bottom: var(--space-xl);
+}
+
+.button-selector.large-group {
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+}
+
+.button-selector-item {
+    background: var(--bg-elevated);
+    border: 2px solid var(--border-medium);
+    border-radius: var(--radius-md);
+    padding: 1.25rem 1rem;
+    text-align: center;
+    cursor: pointer;
+    transition: all var(--transition-base);
+    user-select: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.625rem;
+    min-height: 120px;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+}
+
+.button-selector-item::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: var(--grid-pattern);
+    opacity: 0;
+    transition: opacity var(--transition-base);
+}
+
+.button-selector-item:hover:not(.disabled) {
+    border-color: var(--tactical-green);
+    background: linear-gradient(135deg, rgba(0, 255, 65, 0.05) 0%, rgba(0, 255, 65, 0.1) 100%);
+    transform: translateY(-4px);
+    box-shadow: 0 8px 20px rgba(0, 255, 65, 0.2);
+}
+
+.button-selector-item:hover:not(.disabled)::before {
+    opacity: 1;
+}
+
+.button-selector-item.active {
+    border-color: var(--tactical-green);
+    background: linear-gradient(135deg, rgba(0, 255, 65, 0.15) 0%, rgba(0, 255, 65, 0.08) 100%);
+    box-shadow: 0 0 30px rgba(0, 255, 65, 0.3), inset 0 0 20px rgba(0, 255, 65, 0.1);
+}
+
+.button-selector-item.active .icon,
+.button-selector-item.active .label,
+.button-selector-item.active .description {
+    color: var(--tactical-green) !important;
+}
+
+.button-selector-item.disabled {
+    background: var(--bg-secondary);
+    border-color: var(--border-light);
+    color: var(--text-tertiary);
+    cursor: not-allowed;
+    opacity: 0.4;
+}
+
+.button-selector-item.disabled:hover {
+    transform: none;
+    box-shadow: none;
+}
+
+.button-selector-item .icon {
+    font-size: 2rem;
+    color: var(--text-secondary);
+    transition: all var(--transition-fast);
+}
+
+.button-selector-item:hover:not(.disabled) .icon {
+    color: var(--tactical-green);
+    filter: drop-shadow(0 0 10px rgba(0, 255, 65, 0.5));
+}
+
+.button-selector-item .label {
+    font-weight: var(--font-semibold);
+    font-size: 0.9375rem;
+    color: var(--text-primary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.button-selector-item .description {
+    font-size: 0.8125rem;
+    color: var(--text-tertiary);
+    line-height: 1.4;
+}
+
+/* Recommended */
+.button-selector-item.recommended {
+    border-color: var(--tactical-green);
+    background: linear-gradient(135deg, rgba(0, 255, 65, 0.1) 0%, rgba(0, 255, 65, 0.05) 100%);
+}
+
+.button-selector-item.recommended.active {
+    box-shadow: 0 0 40px rgba(0, 255, 65, 0.4);
+}
+
+/* Upload Button */
+.button-selector-item.upload-button {
+    border-color: var(--tactical-purple);
+    background: linear-gradient(135deg, rgba(189, 0, 255, 0.1) 0%, rgba(189, 0, 255, 0.05) 100%);
+}
+
+.button-selector-item.upload-button:hover {
+    border-color: var(--tactical-purple);
+    box-shadow: 0 8px 20px rgba(189, 0, 255, 0.3);
+}
+
+/* ============================================
+   FORMS - TACTICAL INPUT
+   ============================================ */
+.form-label {
+    display: block;
+    margin-bottom: 0.5rem;
+    font-weight: var(--font-semibold);
+    color: var(--text-primary);
+    font-size: 0.9375rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.form-control,
+.form-select {
+    display: block;
+    width: 100%;
+    padding: 0.75rem 1rem;
+    font-size: 1rem;
+    font-weight: var(--font-normal);
+    line-height: 1.5;
+    color: var(--text-primary);
+    background-color: var(--bg-elevated);
+    border: 2px solid var(--border-medium);
+    border-radius: var(--radius-sm);
+    transition: all var(--transition-fast);
+    font-family: var(--font-mono);
+}
+
+.form-control:focus,
+.form-select:focus {
+    outline: none;
+    border-color: var(--tactical-green);
+    box-shadow: 0 0 0 3px rgba(0, 255, 65, 0.1), 0 0 20px rgba(0, 255, 65, 0.2);
+    background-color: var(--bg-panel);
+}
+
+.form-control::placeholder {
+    color: var(--text-muted);
+    opacity: 0.6;
+}
+
+.form-text,
+.help-text {
+    margin-top: 0.375rem;
+    font-size: 0.875rem;
+    color: var(--text-tertiary);
+    line-height: 1.5;
+}
+
+/* ============================================
+   TABLES - DATA GRID
+   ============================================ */
+.table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    border: 1px solid var(--border-tactical);
+}
+
+.table thead th {
+    background: linear-gradient(135deg, var(--tactical-gray-800) 0%, var(--tactical-gray-700) 100%);
+    color: var(--tactical-green);
+    font-weight: var(--font-bold);
+    font-size: 0.875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    padding: 1rem 1.25rem;
+    text-align: left;
+    border-bottom: 2px solid var(--border-tactical);
+}
+
+.table thead.table-dark th {
+    background: linear-gradient(135deg, var(--tactical-gray-900) 0%, var(--tactical-gray-800) 100%);
+    color: var(--tactical-green);
+    border-color: var(--border-tactical);
+}
+
+.table tbody tr {
+    background-color: var(--bg-elevated);
+    transition: all var(--transition-fast);
+    border-bottom: 1px solid var(--border-light);
+}
+
+.table tbody tr:hover {
+    background: linear-gradient(90deg, rgba(0, 255, 65, 0.05) 0%, transparent 100%);
+    border-color: var(--border-tactical);
+}
+
+.table tbody tr:nth-child(even) {
+    background-color: var(--bg-tertiary);
+}
+
+.table tbody tr:nth-child(even):hover {
+    background: linear-gradient(90deg, rgba(0, 255, 65, 0.05) 0%, transparent 100%);
+}
+
+.table td {
+    padding: 1rem 1.25rem;
+    color: var(--text-secondary);
+    font-size: 0.9375rem;
+    font-family: var(--font-mono);
+}
+
+.table td strong {
+    color: var(--text-primary);
+    font-weight: var(--font-bold);
+}
+
+.table .text-muted {
+    color: var(--text-muted) !important;
+}
+
+.table-sm td,
+.table-sm th {
+    padding: 0.75rem 1rem;
+    font-size: 0.875rem;
+}
+
+/* ============================================
+   ALERTS - TACTICAL NOTIFICATIONS
+   ============================================ */
+.alert {
+    padding: 1rem 1.25rem;
+    border-radius: var(--radius-md);
+    border: 2px solid transparent;
+    margin-bottom: var(--space-lg);
+    font-weight: var(--font-medium);
+    font-size: 1rem;
+    display: flex;
+    align-items: flex-start;
+    gap: 1rem;
+    position: relative;
+    overflow: hidden;
+}
+
+.alert::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 4px;
+}
+
+.alert-success {
+    background: linear-gradient(135deg, rgba(0, 255, 65, 0.15) 0%, rgba(0, 255, 65, 0.08) 100%);
+    border-color: var(--tactical-green);
+    color: var(--tactical-green);
+}
+
+.alert-success::before {
+    background: var(--tactical-green);
+    box-shadow: 0 0 10px var(--tactical-green);
+}
+
+.alert-danger {
+    background: linear-gradient(135deg, rgba(255, 56, 56, 0.15) 0%, rgba(255, 56, 56, 0.08) 100%);
+    border-color: var(--tactical-red);
+    color: var(--tactical-red);
+}
+
+.alert-danger::before {
+    background: var(--tactical-red);
+    box-shadow: 0 0 10px var(--tactical-red);
+}
+
+.alert-warning {
+    background: linear-gradient(135deg, rgba(255, 176, 0, 0.15) 0%, rgba(255, 176, 0, 0.08) 100%);
+    border-color: var(--tactical-amber);
+    color: var(--tactical-amber);
+}
+
+.alert-warning::before {
+    background: var(--tactical-amber);
+    box-shadow: 0 0 10px var(--tactical-amber);
+}
+
+.alert-info {
+    background: linear-gradient(135deg, rgba(0, 217, 255, 0.15) 0%, rgba(0, 217, 255, 0.08) 100%);
+    border-color: var(--tactical-blue);
+    color: var(--tactical-blue);
+}
+
+.alert-info::before {
+    background: var(--tactical-blue);
+    box-shadow: 0 0 10px var(--tactical-blue);
+}
+
+.alert .text-muted {
+    color: inherit !important;
+    opacity: 0.8;
+}
+
+.alert-dismissible .btn-close {
+    padding: 1rem;
+}
+
+/* ============================================
+   BADGES - STATUS INDICATORS
+   ============================================ */
+.badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.375rem 0.875rem;
+    font-size: 0.8125rem;
+    font-weight: var(--font-bold);
+    line-height: 1;
+    border-radius: var(--radius-sm);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    border: 1px solid;
+}
+
+.badge-primary {
+    background-color: rgba(0, 255, 65, 0.2);
+    color: var(--tactical-green);
+    border-color: var(--tactical-green);
+}
+
+.badge-success {
+    background-color: rgba(0, 255, 65, 0.2);
+    color: var(--tactical-green);
+    border-color: var(--tactical-green);
+}
+
+.badge-warning {
+    background-color: rgba(255, 176, 0, 0.2);
+    color: var(--tactical-amber);
+    border-color: var(--tactical-amber);
+}
+
+.badge-danger {
+    background-color: rgba(255, 56, 56, 0.2);
+    color: var(--tactical-red);
+    border-color: var(--tactical-red);
+}
+
+.badge-info {
+    background-color: rgba(0, 217, 255, 0.2);
+    color: var(--tactical-blue);
+    border-color: var(--tactical-blue);
+}
+
+.badge-secondary {
+    background-color: rgba(156, 166, 179, 0.2);
+    color: var(--text-tertiary);
+    border-color: var(--border-medium);
+}
+
+.badge-sm {
+    font-size: 0.75rem;
+    padding: 0.25rem 0.625rem;
+}
+
+/* ============================================
+   PROGRESS - MISSION STATUS
+   ============================================ */
+.progress {
+    height: 1rem;
+    background-color: var(--bg-tertiary);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--border-medium);
+}
+
+.progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, var(--tactical-green-dark), var(--tactical-green));
+    border-radius: var(--radius-sm);
+    transition: width var(--transition-slow);
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 0 10px rgba(0, 255, 65, 0.5);
+}
+
+.progress-bar::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    right: 0;
+    background: linear-gradient(
+        90deg,
+        transparent,
+        rgba(255, 255, 255, 0.2),
+        transparent
+    );
+    animation: shimmer 2s infinite;
+}
+
+@keyframes shimmer {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+}
+
+.progress-small {
+    height: 0.5rem;
+}
+
+.progress-medium {
+    height: 0.75rem;
+}
+
+.progress-text {
+    margin-top: 0.375rem;
+    font-size: 0.875rem;
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+}
+
+/* ============================================
+   MODALS - COMMAND INTERFACE
+   ============================================ */
+.modal-content {
+    background: var(--bg-elevated);
+    border: 2px solid var(--border-tactical);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8), 0 0 40px rgba(0, 255, 65, 0.2);
+}
+
+.modal-header {
+    padding: 1.5rem 2rem;
+    border-bottom: 1px solid var(--border-tactical);
+    background: linear-gradient(135deg, var(--tactical-gray-800) 0%, var(--tactical-gray-700) 100%);
+}
+
+.modal-title {
+    font-size: 1.5rem;
+    font-weight: var(--font-bold);
+    color: var(--tactical-green);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+}
+
+.modal-body {
+    padding: 2rem;
+    color: var(--text-secondary);
+}
+
+.modal-footer {
+    padding: 1.5rem 2rem;
+    border-top: 1px solid var(--border-tactical);
+    background: var(--bg-tertiary);
+}
+
+.modal-xl {
+    max-width: 90%;
+}
+
+/* ============================================
+   FILE UPLOAD - DATA TRANSFER
+   ============================================ */
+.file-upload-area {
+    border: 2px dashed var(--border-tactical);
+    border-radius: var(--radius-lg);
+    padding: 3rem 2rem;
+    text-align: center;
+    transition: all var(--transition-base);
+    cursor: pointer;
+    background: var(--bg-tertiary);
+    position: relative;
+    overflow: hidden;
+}
+
+.file-upload-area::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: var(--grid-pattern);
+    opacity: 0.5;
+}
+
+.file-upload-area:hover {
+    border-color: var(--tactical-green);
+    background: linear-gradient(135deg, rgba(0, 255, 65, 0.05) 0%, rgba(0, 255, 65, 0.1) 100%);
+    box-shadow: 0 0 30px rgba(0, 255, 65, 0.2);
+}
+
+.file-upload-area.dragover {
+    border-color: var(--tactical-green);
+    background: linear-gradient(135deg, rgba(0, 255, 65, 0.1) 0%, rgba(0, 255, 65, 0.15) 100%);
+    box-shadow: 0 0 40px rgba(0, 255, 65, 0.3);
+}
+
+.file-upload-area p {
+    color: var(--text-secondary);
+    font-weight: var(--font-medium);
+    margin: 0;
+    position: relative;
+    z-index: 1;
+}
+
+/* ============================================
+   LOGS - TERMINAL INTERFACE
+   ============================================ */
+.log-container,
+.log-display {
+    background: var(--tactical-black);
+    color: var(--tactical-green);
+    border: 1px solid var(--border-tactical);
+    border-radius: var(--radius-md);
+    padding: 1.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.875rem;
+    line-height: 1.6;
+    overflow-y: auto;
+    box-shadow: inset 0 0 40px rgba(0, 255, 65, 0.05);
+    height: 500px;
+}
+
+.log-display {
+    height: 400px;
+}
+
+.log-entry {
+    padding: 0.5rem;
+    border-bottom: 1px solid rgba(0, 255, 65, 0.1);
+    color: var(--tactical-green);
+    transition: background-color var(--transition-fast);
+    font-size: 0.875rem;
+}
+
+.log-entry:hover {
+    background-color: rgba(0, 255, 65, 0.05);
+}
+
+.log-entry .text-muted {
+    color: var(--text-muted) !important;
+}
+
+.log-timestamp {
+    min-width: 150px;
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+}
+
+.log-level-badge,
+.log-component-badge {
+    font-family: var(--font-mono);
+}
+
+pre {
+    background: var(--tactical-black);
+    border: 1px solid var(--border-tactical);
+    border-radius: var(--radius-md);
+    padding: 1.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.875rem;
+    line-height: 1.6;
+    color: var(--tactical-green);
+    overflow-x: auto;
+}
+
+code {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    padding: 0.2em 0.4em;
+    background-color: var(--bg-tertiary);
+    border-radius: var(--radius-sm);
+    color: var(--tactical-green);
+    border: 1px solid var(--border-light);
+}
+
+/* ============================================
+   STATUS INDICATORS
+   ============================================ */
+.status-online {
+    color: var(--tactical-green);
+    font-weight: var(--font-bold);
+    text-shadow: 0 0 10px rgba(0, 255, 65, 0.5);
+}
+
+.status-offline {
+    color: var(--tactical-red);
+    font-weight: var(--font-bold);
+    text-shadow: 0 0 10px rgba(255, 56, 56, 0.5);
+}
+
+.status-warning {
+    color: var(--tactical-amber);
+    font-weight: var(--font-bold);
+    text-shadow: 0 0 10px rgba(255, 176, 0, 0.5);
+}
+
+/* ============================================
+   LIST GROUPS
+   ============================================ */
+.list-group-item {
+    color: var(--text-secondary);
+    background-color: var(--bg-elevated);
+    border: 1px solid var(--border-light);
+    padding: 1rem 1.25rem;
+}
+
+.list-group-item:hover {
+    background-color: var(--bg-panel);
+}
+
+.list-group-item .text-muted {
+    color: var(--text-muted) !important;
+}
+
+/* ============================================
+   SPECIALIZED CLASSES
+   ============================================ */
+.telemetry-label {
+    color: var(--text-secondary);
+    font-weight: var(--font-semibold);
+    font-size: 0.875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.telemetry-value {
+    color: var(--tactical-green);
+    font-weight: var(--font-bold);
+    font-family: var(--font-mono);
+}
+
+.metric-label {
+    color: var(--text-secondary);
+    font-weight: var(--font-semibold);
+    font-size: 0.8125rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+}
+
+.metric-display strong,
+.status-display strong {
+    color: var(--tactical-green) !important;
+    font-family: var(--font-mono);
+}
+
+/* ============================================
+   FOOTER
+   ============================================ */
+.bg-dark,
+footer {
+    background: linear-gradient(180deg, var(--tactical-gray-900) 0%, var(--tactical-black) 100%) !important;
+    border-top: 1px solid var(--border-tactical);
+}
+
+.text-light {
+    color: var(--text-secondary) !important;
+}
+
+.text-light a {
+    color: var(--tactical-green) !important;
+    text-decoration: none;
+    transition: all var(--transition-fast);
+}
+
+.text-light a:hover {
+    color: var(--tactical-green) !important;
+    text-shadow: 0 0 10px rgba(0, 255, 65, 0.5);
+}
+
+/* ============================================
+   ANIMATIONS
+   ============================================ */
+.fade-in {
+    animation: fadeIn 0.5s ease-out;
+}
+
+.slide-up {
+    animation: slideUp 0.4s ease-out;
+}
+
+.scale-in {
+    animation: scaleIn 0.3s ease-out;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes slideUp {
+    from {
+        opacity: 0;
+        transform: translateY(30px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes scaleIn {
+    from {
+        opacity: 0;
+        transform: scale(0.95);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+/* ============================================
+   LOADING STATES
+   ============================================ */
+.loading {
+    opacity: 0.6;
+    pointer-events: none;
+    position: relative;
+}
+
+.loading::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 24px;
+    height: 24px;
+    margin: -12px 0 0 -12px;
+    border: 3px solid var(--tactical-green);
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+    box-shadow: 0 0 10px rgba(0, 255, 65, 0.3);
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+.spinner-border-sm {
+    width: 1rem;
+    height: 1rem;
+    border-color: var(--tactical-green);
+    border-right-color: transparent;
+}
+
+/* ============================================
+   UTILITIES
+   ============================================ */
+.border-dashed {
+    border-style: dashed !important;
+}
+
+.shadow-sm { box-shadow: var(--shadow-sm) !important; }
+.shadow-md { box-shadow: var(--shadow-md) !important; }
+.shadow-lg { box-shadow: var(--shadow-lg) !important; }
+.shadow-xl { box-shadow: var(--shadow-xl) !important; }
+
+/* ============================================
+   RESPONSIVE DESIGN
+   ============================================ */
+@media (max-width: 768px) {
+    html { font-size: 15px; }
+
+    h1 { font-size: 2rem; }
+    h2 { font-size: 1.75rem; }
+
+    .navbar {
+        padding: 0.875rem 1rem;
+    }
+
+    .performance-card h4 {
+        font-size: 2.25rem;
+    }
+
+    .button-selector {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 0.75rem;
+    }
+
+    .modal-xl {
+        max-width: 95%;
+    }
+}
+
+@media (max-width: 576px) {
+    .button-selector {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* ============================================
+   ACCESSIBILITY
+   ============================================ */
+:focus-visible {
+    outline: 2px solid var(--tactical-green);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 4px rgba(0, 255, 65, 0.2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}
+
+/* ============================================
+   CONTAINER OVERRIDES
+   ============================================ */
+.container-fluid {
+    /* position:relative keeps this above body::before (the tactical gradient, which is
+       z-index:0 + pointer-events:none and paints earlier in tree order).
+
+       DO NOT add a z-index here. `position` + a non-auto z-index creates a STACKING
+       CONTEXT, and <main class="container-fluid"> contains every modal in the app.
+       Bootstrap appends .modal-backdrop (z-index:1050) to <body>, outside that context,
+       so the whole subtree - including a z-index:1055 modal - painted underneath it.
+       Dialogs stayed visible through the translucent backdrop but every click, keystroke
+       and close hit the backdrop instead, with no JS error to show for it. A child can
+       never escape its parent's stacking context, so no z-index on .modal can fix it.
+       See tests/test_modal_stacking.py, which fails if a stacking context is
+       reintroduced on any modal ancestor. */
+    position: relative;
+}
+
+main {
+    min-height: calc(100vh - 200px);
+}

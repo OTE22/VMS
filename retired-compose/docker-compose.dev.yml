@@ -1,0 +1,22 @@
+services:
+  infernode:
+    image: infernode-dev          # <-- This names your built image
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+
+    container_name: infernode-dev
+
+    volumes:
+      - ./:/app
+      - ./InferenceNode/templates:/app/InferenceNode/templates
+      - ./InferenceNode/logs:/app/InferenceNode/logs
+      - ./InferenceNode/model_repository:/app/InferenceNode/model_repository
+
+    ports:
+      - "5555:5555"
+
+    environment:
+      - PYTHONUNBUFFERED=1
+
+    restart: unless-stopped

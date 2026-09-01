@@ -1,0 +1,333 @@
+/*
+ * ArmyEye authentication screens (login, change password).
+ *
+ * Built on the existing tactical design system - style.css already fully defines
+ * .form-control, .btn, .btn-primary, .alert and the body background, so nothing is
+ * re-invented here.
+ *
+ * STACKING DISCIPLINE (deliberate):
+ * An earlier `.container-fluid { position: relative; z-index: 1 }` created a stacking
+ * context that put every Bootstrap modal underneath its own backdrop. Nothing in this
+ * file sets a z-index on an ancestor of the form. Decorative layers are ::before/::after
+ * pseudo-elements with pointer-events:none, which paint behind normal content by tree
+ * order without needing one.
+ */
+
+/* --------------------------------------------------------------- page shell */
+
+.auth-page {
+    min-height: 100vh;
+    min-height: 100dvh;          /* mobile browser chrome */
+    display: grid;
+    grid-template-columns: 1fr;
+    background: var(--bg-primary);
+}
+
+@media (min-width: 992px) {
+    .auth-page { grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); }
+}
+
+/* ------------------------------------------------------------ identity side */
+
+.auth-hero {
+    position: relative;
+    display: none;               /* mobile-first: the form is what matters on small screens */
+    flex-direction: column;
+    justify-content: space-between;
+    padding: clamp(2rem, 4vw, 3.5rem);
+    overflow: hidden;
+    background-color: var(--tactical-black);
+
+    /* DROP-IN SLOT ---------------------------------------------------------
+       Artwork goes at InferenceNode/static/img/auth/armyeye-vms-hero.webp and is
+       applied by .auth-hero--image below (set from the template only when the file
+       exists). Until then this CSS-only fallback renders, so the page is never
+       broken and never requests a missing asset.
+       -------------------------------------------------------------------- */
+    background-image:
+        radial-gradient(ellipse at 30% 20%, rgba(0, 255, 65, 0.10) 0%, transparent 55%),
+        radial-gradient(ellipse at 80% 80%, rgba(198, 160, 60, 0.08) 0%, transparent 50%);
+}
+
+@media (min-width: 992px) {
+    .auth-hero { display: flex; }
+}
+
+/* Subtle tactical grid. Decorative only - hidden from assistive tech, never clickable. */
+.auth-hero::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background-image:
+        linear-gradient(rgba(0, 255, 65, 0.045) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0, 255, 65, 0.045) 1px, transparent 1px);
+    background-size: 44px 44px;
+    mask-image: radial-gradient(ellipse at 45% 40%, #000 30%, transparent 78%);
+    -webkit-mask-image: radial-gradient(ellipse at 45% 40%, #000 30%, transparent 78%);
+}
+
+/* Readability guarantee: whatever the artwork is, text sits on a controlled gradient.
+   This is how contrast is fixed - never by putting a z-index on a layout ancestor. */
+.auth-hero::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    /* Dark at the top and bottom bands where the brand mark and footer text sit, but
+       light through the middle so the artwork is actually visible. The earlier
+       .72/.55/.88 was heavy enough to read as "no image at all". */
+    background: linear-gradient(180deg,
+        rgba(10, 14, 20, 0.45) 0%,
+        rgba(10, 14, 20, 0.25) 45%,
+        rgba(10, 14, 20, 0.78) 100%);
+}
+
+/* When artwork is present the template adds this class. */
+.auth-hero--image {
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+}
+
+/* Content must sit above the two decorative pseudo-elements. `position: relative`
+   WITHOUT a z-index is enough (positioned elements paint after non-positioned ones),
+   so no stacking context is created. */
+.auth-hero > * { position: relative; }
+
+.auth-brand { display: flex; align-items: center; gap: 0.875rem; }
+
+.auth-brand__mark {
+    display: grid;
+    place-items: center;
+    width: 52px;
+    height: 52px;
+    flex: 0 0 52px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--auth-gold, #c6a03c);
+    background: rgba(198, 160, 60, 0.10);
+    color: var(--auth-gold, #c6a03c);
+    font-size: 1.35rem;
+}
+
+/* Arabic identity: real, selectable, accessible text - never baked into an image. */
+.auth-ar {
+    font-size: clamp(1.45rem, 2.4vw, 2rem);
+    font-weight: var(--font-bold);
+    line-height: 1.45;
+    color: var(--text-primary);
+    margin: 0;
+}
+
+.auth-ar__sub {
+    display: block;
+    font-size: clamp(1rem, 1.5vw, 1.25rem);
+    font-weight: var(--font-medium);
+    color: var(--auth-gold, #c6a03c);
+    margin-top: 0.25rem;
+}
+
+.auth-en {
+    margin-top: 1.75rem;
+    font-family: var(--font-tactical);
+    font-size: 1.5rem;
+    font-weight: var(--font-bold);
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--tactical-green);
+}
+
+.auth-en__sub {
+    display: block;
+    font-family: var(--font-sans);
+    font-size: 0.875rem;
+    font-weight: var(--font-normal);
+    letter-spacing: 0.04em;
+    text-transform: none;
+    color: var(--text-tertiary);
+    margin-top: 0.375rem;
+}
+
+.auth-points { list-style: none; padding: 0; margin: 2.25rem 0 0; }
+
+.auth-points li {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.625rem;
+    padding: 0.375rem 0;
+    font-size: 0.9375rem;
+    color: var(--text-secondary);
+}
+
+.auth-points i { color: var(--tactical-green); margin-top: 0.2rem; font-size: 0.8125rem; }
+
+.auth-hero__foot {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    letter-spacing: 0.04em;
+}
+
+/* ---------------------------------------------------------------- form side */
+
+.auth-panel {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: clamp(1.5rem, 4vw, 3rem) clamp(1rem, 4vw, 3rem);
+}
+
+.auth-card {
+    width: 100%;
+    max-width: 27rem;
+}
+
+/* Compact identity shown only where the hero panel is hidden. */
+.auth-card__brand {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1.75rem;
+}
+
+@media (min-width: 992px) {
+    .auth-card__brand { display: none; }
+}
+
+.auth-card__eyebrow {
+    font-size: 0.6875rem;
+    font-weight: var(--font-semibold);
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--tactical-green);
+}
+
+.auth-card__title {
+    font-size: 1.5rem;
+    font-weight: var(--font-bold);
+    color: var(--text-primary);
+    margin: 0.375rem 0 0.5rem;
+}
+
+.auth-card__lead {
+    font-size: 0.9375rem;
+    color: var(--text-tertiary);
+    margin-bottom: 1.75rem;
+}
+
+.auth-field { margin-bottom: 1.125rem; }
+
+.auth-field .form-label {
+    display: block;
+    font-size: 0.8125rem;
+    font-weight: var(--font-semibold);
+    letter-spacing: 0.04em;
+    color: var(--text-secondary);
+    margin-bottom: 0.375rem;
+}
+
+/* Input with a leading icon. The icon is decorative and must never eat clicks or
+   overlap typed text. */
+.auth-input { position: relative; }
+
+.auth-input > .auth-input__icon {
+    position: absolute;
+    left: 0.875rem;
+    top: 50%;
+    transform: translateY(-50%);
+    pointer-events: none;
+    color: var(--text-muted);
+    font-size: 0.875rem;
+}
+
+.auth-input .form-control { padding-left: 2.5rem; }
+.auth-input .form-control.has-trailing { padding-right: 3rem; }
+.auth-input:focus-within > .auth-input__icon { color: var(--tactical-green); }
+
+.auth-input__toggle {
+    position: absolute;
+    right: 0.375rem;
+    top: 50%;
+    transform: translateY(-50%);
+    display: grid;
+    place-items: center;
+    width: 2.25rem;
+    height: 2.25rem;
+    padding: 0;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.auth-input__toggle:hover { color: var(--tactical-green); }
+.auth-input__toggle:focus-visible { border-color: var(--tactical-green); outline: none; }
+
+.auth-hint {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    margin-top: 0.375rem;
+    font-size: 0.75rem;
+    color: var(--tactical-amber);
+}
+
+.auth-hint[hidden] { display: none; }
+
+.auth-submit { width: 100%; justify-content: center; margin-top: 0.5rem; }
+
+.auth-error {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.625rem;
+    padding: 0.75rem 0.875rem;
+    margin-bottom: 1.25rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid rgba(255, 56, 56, 0.4);
+    background: rgba(255, 56, 56, 0.08);
+    color: var(--text-primary);
+    font-size: 0.875rem;
+}
+
+.auth-error i { color: var(--tactical-red); margin-top: 0.1rem; }
+.auth-error__title { font-weight: var(--font-semibold); display: block; margin-bottom: 0.125rem; }
+
+.auth-notice {
+    margin-top: 1.75rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--border-light);
+    font-size: 0.75rem;
+    line-height: 1.6;
+    color: var(--text-muted);
+}
+
+.auth-notice i { color: var(--text-muted); margin-right: 0.375rem; }
+
+/* Requirement list for the change-password screen. */
+.auth-reqs { list-style: none; padding: 0; margin: 0.5rem 0 0; }
+
+.auth-reqs li {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    padding: 0.125rem 0;
+}
+
+.auth-reqs li[data-met="true"] { color: var(--tactical-green); }
+
+/* ------------------------------------------------------------------ motion */
+
+@media (prefers-reduced-motion: no-preference) {
+    .auth-card { animation: auth-rise 260ms ease-out both; }
+    @keyframes auth-rise {
+        from { opacity: 0; transform: translateY(8px); }
+        to   { opacity: 1; transform: none; }
+    }
+}
+
+/* Do not download or paint the hero artwork when the user asks to save data. */
+@media (prefers-reduced-data: reduce) {
+    .auth-hero--image { background-image: none; }
+}

@@ -1,0 +1,35 @@
+{
+  "node_id": "7e0a12b9-bc22-4bd7-bbbe-089d9b44c122",
+  "node_name": "InferNode-DESKTOP-3UF6TIJ",
+  "publishers": [],
+  "telemetry": {
+    "enabled": true,
+    "publish_interval": 30.0
+  },
+  "favorite_configs": {
+    "6bdb3e0c-3a6a-47cc-9e4a-1f1dd1d509f1": {
+      "id": "6bdb3e0c-3a6a-47cc-9e4a-1f1dd1d509f1",
+      "name": "null",
+      "description": "",
+      "type": "null",
+      "config": {},
+      "created_at": "2025-12-13T20:18:14.149936"
+    },
+    "f0b4bb00-7e64-4b09-9768-531ea0be6a76": {
+      "id": "f0b4bb00-7e64-4b09-9768-531ea0be6a76",
+      "name": "webhook",
+      "description": "",
+      "type": "webhook",
+      "config": {
+        "rate_limit": 0,
+        "max_frames": 0,
+        "include_image_data": false,
+        "include_result_image": true,
+        "url": "http://127.0.0.1:5000/webhook/{pipeline_id}",
+        "timeout": 30
+      },
+      "created_at": "2025-12-14T07:59:16.588235",
+      "updated_at": "2025-12-14T19:13:47.905485"
+    }
+  }
+}

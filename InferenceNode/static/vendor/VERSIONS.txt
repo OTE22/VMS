@@ -1,0 +1,37 @@
+ArmyEye vendored frontend dependencies
+========================================================================
+
+Served locally from /static/vendor/ so ArmyEye runs with the network fully
+disconnected. Do NOT replace these with CDN links.
+
+NOTE: this file is .txt, not .md, because .dockerignore excludes *.md and the
+manifest would otherwise never reach the production image.
+
+Verify integrity at any time with:
+  python -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" <file>
+
+Bootstrap 5.3.0
+  source: https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/
+  7f1d37f0d90b6385354c2ac10e2bb91563c46bd7a266ed351222ebcac8496c2a    232914  bootstrap/bootstrap.min.css
+  aa53d582f97eb594c2a5cc5824574707f9ba9837bce3046bfa5f3556860f4e04     80421  bootstrap/bootstrap.bundle.min.js
+
+Font Awesome Free 6.4.0
+  source: https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/
+  1edb1725a9ea8ca4dcf2f5508cee183218aa1685e47c1b23056717f754f58ebf    102025  fontawesome/css/all.min.css
+  20c4a58bc9d1d69e935d06f1528923646a715be5e218665655cade8f5f1b8c00    187208  fontawesome/webfonts/fa-brands-400.ttf
+  748332090c4b8e20f95d0ff59f0be20fa9c889359d3b36d4b886d73376054207    108020  fontawesome/webfonts/fa-brands-400.woff2
+  528d022dce6725f8a0811fd91d8e6513445c81ef33353a5c3234eab932551abf     63952  fontawesome/webfonts/fa-regular-400.ttf
+  8e7e5ea1b15f62ab14dbd41768e8fbcd21cc859a4ea5da812457ee714299fb35     24948  fontawesome/webfonts/fa-regular-400.woff2
+  67a65763c7f80903d81603bbeb9049fc2bf28508479b83ed011fe24c71fa950a    394628  fontawesome/webfonts/fa-solid-900.ttf
+  7152a6933ee3d690ec2af3d09da9d701723d16aa3410a6d80f28ff8866f3b880    150124  fontawesome/webfonts/fa-solid-900.woff2
+  0515a423f828ce4e6accf92a2ea0b03d19d31cc86d9af0373291e1fd4db5f348     10172  fontawesome/webfonts/fa-v4compatibility.ttf
+  694a17c3d9d6c05f8aac63c544615552a4b220e9a4de863d87341a6bcfc1bc8d      4564  fontawesome/webfonts/fa-v4compatibility.woff2
+
+Chart.js 4.5.1
+  source: https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/
+  48444a82d4edcb5bec0f1965faacdde18d9c17db3063d042abada2f705c9f54a    208522  chartjs/chart.umd.min.js
+
+Font Awesome note:
+  all.min.css references its webfonts via ../webfonts/ - the css/ and webfonts/
+  directory layout MUST be preserved or every icon silently becomes an empty box.
+  All 8 referenced files are vendored (incl. fa-v4compatibility, which is easy to miss).

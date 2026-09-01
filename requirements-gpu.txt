@@ -1,0 +1,13 @@
+# NVIDIA GPU (CUDA) compute stack.
+# Selected automatically when an NVIDIA GPU is detected (COMPUTE=gpu).
+# Install this BEFORE requirements.txt so ultralytics resolves against CUDA torch.
+#
+# Uses the default PyPI index, which ships CUDA-enabled torch wheels on Linux.
+# For a specific CUDA version, swap in the matching index, e.g. cu121:
+#   --extra-index-url https://download.pytorch.org/whl/cu121
+
+torch>=1.11.0
+torchvision>=0.12.0
+
+# ONNX Runtime - CUDA build (do NOT install alongside plain onnxruntime)
+onnxruntime-gpu>=1.16.0

@@ -1,0 +1,88 @@
+{#
+  Minimal layout for UNAUTHENTICATED screens (login, change password).
+
+  Deliberately does NOT extend base.html: no navbar, no user dropdown, no admin
+  navigation, and none of app.js / armyeye-ui.js / admin-users.js. An unauthenticated
+  visitor should download nothing from the application shell and learn nothing about
+  the deployment from it.
+
+  Every asset is local - ArmyEye runs on isolated networks (see static/vendor/VERSIONS.txt).
+#}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex, nofollow">
+    <title>{% block title %}ArmyEye{% endblock %}</title>
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon.ico') }}">
+    <link href="{{ url_for('static', filename='vendor/bootstrap/bootstrap.min.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='vendor/fontawesome/css/all.min.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/auth.css') }}" rel="stylesheet">
+    {% block head %}{% endblock %}
+</head>
+<body>
+<main class="auth-page">
+
+    {# ---------------------------------------------------------- identity side #}
+    {#
+      HERO ARTWORK DROP-IN:
+      place the file at InferenceNode/static/img/auth/armyeye-vms-hero.webp and set
+      hero_image below. Until it exists the CSS fallback renders, so nothing 404s.
+    #}
+    {% set hero_image = true %}
+    <section class="auth-hero{% if hero_image %} auth-hero--image{% endif %}"
+             {% if hero_image %}style="background-image:url('{{ url_for('static', filename='img/auth/VMS.png') }}')"{% endif %}
+             aria-hidden="true">
+        <div class="auth-brand">
+            <span class="auth-brand__mark"><i class="fas fa-shield-halved"></i></span>
+        </div>
+
+        <div>
+            {# Real HTML text, not baked into artwork: selectable, translatable, accessible.
+               dir="rtl" is scoped to the Arabic block only - the form stays LTR. #}
+            <div dir="rtl" lang="ar">
+                <p class="auth-ar">
+                    الجيش اللبناني
+                    <span class="auth-ar__sub">نظام إدارة الفيديو</span>
+                </p>
+            </div>
+
+            <p class="auth-en">
+                ArmyEye
+                <span class="auth-en__sub">Video Management System</span>
+            </p>
+
+            <ul class="auth-points">
+                <li><i class="fas fa-video"></i><span>Multi-camera monitoring and recording</span></li>
+                <li><i class="fas fa-microchip"></i><span>On-premise AI detection and tracking</span></li>
+                <li><i class="fas fa-user-shield"></i><span>Controlled, per-user pipeline access</span></li>
+                <li><i class="fas fa-network-wired"></i><span>Runs fully offline on local infrastructure</span></li>
+            </ul>
+        </div>
+
+        <p class="auth-hero__foot">مديرية التأليل &mdash; قسم الذكاء الاصطناعي</p>
+    </section>
+
+    {# -------------------------------------------------------------- form side #}
+    <section class="auth-panel">
+        <div class="auth-card">
+            <div class="auth-card__brand">
+                <span class="auth-brand__mark"><i class="fas fa-shield-halved"></i></span>
+                <span>
+                    <span class="auth-en" style="font-size:1.125rem;margin:0;display:block">ArmyEye</span>
+                    <span class="auth-hero__foot">Video Management System</span>
+                </span>
+            </div>
+
+            {% block content %}{% endblock %}
+        </div>
+    </section>
+
+</main>
+<script src="{{ url_for('static', filename='vendor/bootstrap/bootstrap.bundle.min.js') }}"></script>
+<script src="{{ url_for('static', filename='js/auth.js') }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

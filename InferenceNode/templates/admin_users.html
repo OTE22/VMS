@@ -1,0 +1,342 @@
+{% extends "base.html" %}
+{% block title %}Users &amp; Access | ArmyEye{% endblock %}
+
+{#
+  Markup + Jinja only. All behaviour lives in static/js/admin-users.js so this page
+  carries no inline handlers. (CSP was NOT the cause of the modal defect - that was a
+  stacking context on .container-fluid - but keeping the page inline-free means a future
+  CSP needs no 'unsafe-inline' for it.)
+#}
+
+{% block content %}
+<div class="ae-page-header">
+  <div>
+    <h1><i class="fas fa-users-gear me-2" aria-hidden="true"></i>Users &amp; Access</h1>
+    <p class="ae-subtitle">Manage user accounts, security and pipeline permissions.</p>
+  </div>
+  <div class="d-flex gap-2">
+    <button class="btn btn-outline-secondary" id="btn-refresh" type="button">
+      <i class="fas fa-rotate me-1" aria-hidden="true"></i>Refresh
+    </button>
+    <button class="btn btn-primary" id="btn-add-user" type="button">
+      <i class="fas fa-user-plus me-1" aria-hidden="true"></i>Add User
+    </button>
+  </div>
+</div>
+
+<!-- Summary -->
+<div class="ae-stats">
+  <div class="ae-stat">
+    <div class="ae-stat-icon"><i class="fas fa-users" aria-hidden="true"></i></div>
+    <div><div class="ae-stat-value" id="stat-total">–</div><div class="ae-stat-label">Total users</div></div>
+  </div>
+  <div class="ae-stat">
+    <div class="ae-stat-icon"><i class="fas fa-circle-check" aria-hidden="true"></i></div>
+    <div><div class="ae-stat-value" id="stat-active">–</div><div class="ae-stat-label">Active</div></div>
+  </div>
+  <div class="ae-stat">
+    <div class="ae-stat-icon warn"><i class="fas fa-user-shield" aria-hidden="true"></i></div>
+    <div><div class="ae-stat-value" id="stat-admins">–</div><div class="ae-stat-label">Administrators</div></div>
+  </div>
+  <div class="ae-stat">
+    <div class="ae-stat-icon danger"><i class="fas fa-user-slash" aria-hidden="true"></i></div>
+    <div><div class="ae-stat-value" id="stat-disabled">–</div><div class="ae-stat-label">Disabled</div></div>
+  </div>
+</div>
+
+<!-- Filters -->
+<div class="card mb-3">
+  <div class="card-body py-3">
+    <div class="ae-filterbar">
+      <div class="ae-search">
+        <label class="form-label visually-hidden" for="user-search">Search users</label>
+        <div class="input-group">
+          <span class="input-group-text"><i class="fas fa-magnifying-glass" aria-hidden="true"></i></span>
+          <input type="search" class="form-control" id="user-search"
+                 placeholder="Search username, name or email…" autocomplete="off">
+          <button class="btn btn-outline-secondary" id="btn-clear-search" type="button"
+                  aria-label="Clear search"><i class="fas fa-xmark" aria-hidden="true"></i></button>
+        </div>
+      </div>
+      <div>
+        <label class="form-label visually-hidden" for="filter-role">Filter by role</label>
+        <select class="form-select" id="filter-role">
+          <option value="all">Role: All</option>
+          <option value="admin">Administrators</option>
+          <option value="user">Standard Users</option>
+        </select>
+      </div>
+      <div>
+        <label class="form-label visually-hidden" for="filter-status">Filter by status</label>
+        <select class="form-select" id="filter-status">
+          <option value="all">Status: All</option>
+          <option value="active">Active</option>
+          <option value="disabled">Disabled</option>
+          <option value="mustchange">Must change password</option>
+        </select>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Table. ae-menu-safe stops .card/.table overflow (and the hover lift) from clipping
+     or trapping the row action menus - see armyeye-admin.css. -->
+<div class="card ae-menu-safe">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span><i class="fas fa-list me-2" aria-hidden="true"></i>Users</span>
+    <small class="text-muted" id="result-count" aria-live="polite"></small>
+  </div>
+  <div class="table-responsive ae-allow-overflow">
+    <table class="table table-hover align-middle mb-0">
+      <thead class="table-dark">
+        <tr>
+          <th scope="col">User</th>
+          <th scope="col" class="ae-col-role">Role</th>
+          <th scope="col">Status</th>
+          <th scope="col" class="ae-col-access">Pipeline Access</th>
+          <th scope="col" class="ae-col-lastlogin">Last Login</th>
+          <th scope="col" class="ae-col-created">Created</th>
+          <th scope="col" class="text-end">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="users-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<p class="ae-hint mt-2">
+  <i class="fas fa-circle-info me-1" aria-hidden="true"></i>
+  Changing a role, disabling an account or resetting a password immediately ends that
+  user's active sessions. Usernames cannot be changed after the account is created.
+</p>
+
+<!-- ============================================================ Add User -->
+<div class="modal fade" id="addUserModal" tabindex="-1" aria-labelledby="addUserTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div>
+          <h5 class="modal-title" id="addUserTitle">
+            <i class="fas fa-user-plus me-2" aria-hidden="true"></i>Add User
+          </h5>
+          <p class="ae-hint mb-0 mt-1">Create an account and configure its access level.</p>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <form id="add-user-form" novalidate>
+        <div class="modal-body">
+
+          <fieldset class="ae-fieldset">
+            <legend>Account</legend>
+            <div class="mb-3">
+              <label class="form-label ae-required" for="au-username">Username</label>
+              <input class="form-control" id="au-username" maxlength="100" required
+                     autocomplete="off" spellcheck="false" aria-describedby="au-username-help">
+              <div class="ae-hint mt-1" id="au-username-help">
+                Used to sign in. <strong>Cannot be changed later.</strong> Case-insensitive.
+              </div>
+              <div class="invalid-feedback" id="au-username-err"></div>
+            </div>
+            <div class="row g-3">
+              <div class="col-sm-6">
+                <label class="form-label" for="au-fullname">Full name</label>
+                <input class="form-control" id="au-fullname" maxlength="255" autocomplete="off">
+              </div>
+              <div class="col-sm-6">
+                <label class="form-label" for="au-email">Email</label>
+                <input class="form-control" id="au-email" type="email" maxlength="255" autocomplete="off">
+                <div class="invalid-feedback" id="au-email-err"></div>
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset class="ae-fieldset">
+            <legend>Access level</legend>
+            <div class="ae-role-cards" id="au-role-cards" role="radiogroup" aria-label="Role"></div>
+          </fieldset>
+
+          <fieldset class="ae-fieldset mb-0">
+            <legend>Security</legend>
+            <div class="row g-3">
+              <div class="col-sm-6">
+                <label class="form-label ae-required" for="au-password">Temporary password</label>
+                <div class="input-group">
+                  <input class="form-control" id="au-password" type="password" required
+                         autocomplete="new-password">
+                  <button class="btn btn-outline-secondary" type="button" id="au-password-toggle"
+                          aria-label="Show password"><i class="fas fa-eye" aria-hidden="true"></i></button>
+                  <button class="btn btn-outline-secondary" type="button" id="au-password-gen"
+                          aria-label="Generate a strong password" title="Generate a strong password">
+                    <i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i></button>
+                </div>
+                <div class="invalid-feedback d-block" id="au-password-err"></div>
+              </div>
+              <div class="col-sm-6">
+                <label class="form-label ae-required" for="au-confirm">Confirm temporary password</label>
+                <input class="form-control" id="au-confirm" type="password" required
+                       autocomplete="new-password">
+                <div class="invalid-feedback d-block" id="au-confirm-err"></div>
+              </div>
+            </div>
+            <div class="ae-hint mt-2">Minimum 8 characters — the only rule this node enforces.
+              Share it with the user over a secure channel.</div>
+            <div class="form-check mt-3">
+              <input class="form-check-input" type="checkbox" id="au-mustchange" checked>
+              <label class="form-check-label" for="au-mustchange">
+                Require the user to choose a new password at first login
+              </label>
+            </div>
+          </fieldset>
+
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="au-submit">
+            <i class="fas fa-user-plus me-1" aria-hidden="true"></i>Create User
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- =========================================================== Edit User -->
+<div class="modal fade" id="editUserModal" tabindex="-1" aria-labelledby="editUserTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="editUserTitle"><i class="fas fa-user-pen me-2" aria-hidden="true"></i>Edit Profile</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <form id="edit-user-form" novalidate>
+        <div class="modal-body">
+          <input type="hidden" id="eu-id">
+          <fieldset class="ae-fieldset mb-0">
+            <legend>Account</legend>
+            <div class="mb-3">
+              <label class="form-label" for="eu-username">Username</label>
+              <input class="form-control" id="eu-username" readonly disabled>
+              <div class="ae-hint mt-1">Usernames are immutable. To use a different name, create a new account.</div>
+            </div>
+            <div class="mb-3">
+              <label class="form-label" for="eu-fullname">Full name</label>
+              <input class="form-control" id="eu-fullname" maxlength="255" autocomplete="off">
+            </div>
+            <div class="mb-1">
+              <label class="form-label" for="eu-email">Email</label>
+              <input class="form-control" id="eu-email" type="email" maxlength="255" autocomplete="off">
+              <div class="invalid-feedback" id="eu-email-err"></div>
+            </div>
+          </fieldset>
+          <div class="ae-hint mt-3">
+            Role, status, password and pipeline access have their own actions in the row menu.
+            Editing a profile does not sign the user out.
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="eu-submit">
+            <i class="fas fa-floppy-disk me-1" aria-hidden="true"></i>Save Changes
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- ====================================================== Pipeline Access -->
+<div class="modal fade" id="accessModal" tabindex="-1" aria-labelledby="accessTitle" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div>
+          <h5 class="modal-title" id="accessTitle">
+            <i class="fas fa-diagram-project me-2" aria-hidden="true"></i>Pipeline Access
+          </h5>
+          <p class="ae-hint mb-0 mt-1">Pipelines <strong id="ac-username"></strong> may see and operate.</p>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="alert alert-warning py-2 small" id="ac-admin-note" hidden>
+          <i class="fas fa-user-shield me-1" aria-hidden="true"></i>
+          <strong>Administrator.</strong> This account already has full access to every pipeline
+          through its role. Grants below are unnecessary and are not consulted.
+        </div>
+        <div class="input-group input-group-sm mb-2">
+          <span class="input-group-text"><i class="fas fa-magnifying-glass" aria-hidden="true"></i></span>
+          <label class="form-label visually-hidden" for="ac-search">Search pipelines</label>
+          <input class="form-control" id="ac-search" type="search" placeholder="Search pipelines…"
+                 autocomplete="off">
+        </div>
+        <div class="ae-hint mb-2">
+          Start, Stop or Edit each imply View — the server enforces that, so a user can never
+          operate a pipeline they are not allowed to see.
+        </div>
+        <div id="ac-body"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ====================================================== Reset Password -->
+<div class="modal fade" id="resetPwModal" tabindex="-1" aria-labelledby="resetPwTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="resetPwTitle"><i class="fas fa-key me-2" aria-hidden="true"></i>Reset Password</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <form id="reset-pw-form" novalidate>
+        <div class="modal-body">
+          <input type="hidden" id="rp-id">
+          <p class="mb-3">Set a new password for <strong id="rp-username"></strong>.</p>
+          <div class="alert alert-warning py-2 small" id="rp-warning">
+            <i class="fas fa-circle-info me-1" aria-hidden="true"></i>
+            This ends all of that user's active sessions.
+          </div>
+          <fieldset class="ae-fieldset mb-0">
+            <legend>New credentials</legend>
+            <div class="mb-3">
+              <label class="form-label ae-required" for="rp-password">New password</label>
+              <div class="input-group">
+                <input class="form-control" id="rp-password" type="password" required autocomplete="new-password">
+                <button class="btn btn-outline-secondary" type="button" id="rp-password-toggle"
+                        aria-label="Show password"><i class="fas fa-eye" aria-hidden="true"></i></button>
+                <button class="btn btn-outline-secondary" type="button" id="rp-password-gen"
+                        aria-label="Generate a strong password" title="Generate a strong password">
+                  <i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i></button>
+              </div>
+              <div class="ae-hint mt-1">Minimum 8 characters — the only rule this node enforces.</div>
+            </div>
+            <div class="mb-3">
+              <label class="form-label ae-required" for="rp-confirm">Confirm new password</label>
+              <input class="form-control" id="rp-confirm" type="password" required autocomplete="new-password">
+              <div class="invalid-feedback d-block" id="rp-err"></div>
+            </div>
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" id="rp-mustchange" checked>
+              <label class="form-check-label" for="rp-mustchange">
+                Require the user to choose a new password at next login
+              </label>
+            </div>
+          </fieldset>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-warning" id="rp-submit">
+            <i class="fas fa-key me-1" aria-hidden="true"></i>Reset Password
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/admin-users.js') }}"></script>
+{% endblock %}

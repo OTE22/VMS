@@ -1,0 +1,12 @@
+# CPU-only compute stack (default).
+# Selected automatically when no NVIDIA GPU is detected (COMPUTE=cpu).
+# Install this BEFORE requirements.txt so ultralytics resolves against CPU torch.
+#
+# The CPU wheel index keeps torch small (~200MB instead of ~2.5GB of CUDA libs).
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+torch>=1.11.0
+torchvision>=0.12.0
+
+# ONNX Runtime - CPU build
+onnxruntime>=1.16.0

@@ -1,0 +1,103 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.tmp
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# Documentation
+*.md
+docs/
+
+# Tests (optional - remove this line if you want to include tests in the image)
+tests/
+
+# Logs
+*.log
+logs/
+InferenceNode/logs/
+
+# Windows batch files (not needed in Linux container)
+*.bat
+
+# Development and setup files
+setup.py
+activate.bat
+setup.bat
+
+# Large model files (should be mounted as volumes instead)
+InferenceNode/model_repository/*.zip
+InferenceNode/model_repository/*.onnx
+InferenceNode/model_repository/*.pt
+InferenceNode/model_repository/*.pth
+*.pt
+*.pth
+yolo*.pt
+
+# Runtime DATA directories - provided by bind mounts at runtime, never baked
+# into the image. Keeping them out makes the build context code-only (fast builds).
+InferenceNode/media/
+InferenceNode/model_repository/
+InferenceNode/pipelines/
+storage/
+
+# Dead scratch files not needed in the image
+zeciever.py
+kernel.errors.txt
+
+# New compose structure (not needed inside the image)
+compose*.yaml
+docker-start.sh
+
+# Temporary files
+tmp/
+temp/
