@@ -91,6 +91,8 @@ class InferencePipeline:
         # detection_config.target_inference_fps.
         self.TARGET_INFERENCE_FPS = self._env_target_fps()
         self._last_inference_at = None      # None = never inferred yet
+        # Cleared for good if the capture backend ever refuses grab(); see _grab_only.
+        self._skip_decode_supported = True
 
         # --- live-source reconnect (Step 5) --------------------------------------------
         # A camera that drops must not end its pipeline permanently, and a dead source must
@@ -935,6 +937,74 @@ class InferencePipeline:
         capture_type = self._frame_source_config.get('capture_type', '')
         return capture_type in ['folder', 'image_folder']
     
+    # ---- skip-decode (Step 8) --------------------------------------------------------
+    # cv2's read() = grab() + retrieve(): grab pulls the next frame off the wire and decodes
+    # it; retrieve converts it to a BGR numpy array and copies it into Python. At 25 fps
+    # capture against 5 fps inference, 4 frames in 5 are decoded into an array that nothing
+    # ever looks at. Measured against a REAL RTSP camera (mediamtx + libx264, 1080p25):
+    #     read()                6.45 ms CPU/frame
+    #     grab() only           3.14 ms CPU/frame
+    #     grab x5 + retrieve x1 3.57 ms CPU/frame   -> 1.81x cheaper capture
+    # (On a local video FILE the same test shows 3.84x. RTSP is the honest number: the
+    # network + H.264 decode still happen under grab(); only the conversion is skipped.)
+    SKIP_DECODE_ENABLED = os.environ.get("ARMYEYE_SKIP_DECODE", "1").strip().lower() \
+        not in ("0", "false", "no", "off")
+
+    def _can_skip_decode(self) -> bool:
+        """Whether this source can hand back a frame WITHOUT decoding it to an array.
+
+        LIVE sources only, deliberately. A video file paces its own playback inside
+        read() (`real_time=True`), so bypassing that would make files race through at
+        full speed - files are a testing input and stay on the original path.
+        """
+        if not self.SKIP_DECODE_ENABLED or not self._skip_decode_supported:
+            return False
+        if not self._is_live_source():
+            return False
+        # read() also applies any attached frame processors; the grab/retrieve path
+        # bypasses them, so a source with processors stays on the original path.
+        if getattr(self.source, "_processors", None):
+            return False
+        cap = getattr(self.source, "cap", None)
+        return cap is not None and hasattr(cap, "grab") and hasattr(cap, "retrieve")
+
+    def _want_decoded_frame(self, now: float) -> bool:
+        """Pixels are only worth producing if something will actually read them."""
+        if self._inference_enabled and self._due_for_inference(now):
+            return True
+        if self._is_streaming:                      # a live viewer is watching
+            return True
+        if not self._thumbnail_captured and self._thumbnail_path:
+            return True
+        return False
+
+    def _grab_then_maybe_retrieve(self):
+        """Advance the stream, then decode ONLY if something will read the pixels.
+
+        Returns (success, frame_or_None, wanted_pixels).
+
+        grab() is called FIRST so the inference gate is evaluated against the moment the
+        frame actually arrived. Deciding before the read used the time at the top of the
+        iteration - up to a full frame period stale - which pushed every inference onto the
+        following frame and cost 18% of the inference rate (measured against a real RTSP
+        camera: 4.43 -> 3.62 fps at a 5 fps target).
+
+        On ANY unexpected error this permanently reverts the pipeline to full read(), so a
+        surprise in the capture backend can never be mistaken for a dead camera.
+        """
+        try:
+            if not self.source.cap.grab():
+                return False, None, True          # a failed grab IS a failed read
+            if not self._want_decoded_frame(time.perf_counter()):
+                return True, None, False          # advanced the stream, skipped the decode
+            ok, raw = self.source.cap.retrieve()
+            return bool(ok), (raw if ok else None), True
+        except Exception as e:
+            self.logger.warning(f"grab/retrieve unusable ({e}); reverting to full read()")
+            self._skip_decode_supported = False
+            success, frame = self.source.read()
+            return success, frame, True
+
     def _is_live_source(self) -> bool:
         """True for sources that can legitimately drop and come back (cameras).
 
@@ -1134,10 +1204,21 @@ class InferencePipeline:
 
                 # Read frame (timed: a read that returns instantly while the source is
                 # live means we are draining a buffered backlog, i.e. stale frames)
+                # A grabbed-but-not-decoded frame still drains the socket, so the pipeline
+                # stays at the live edge exactly as before; only the BGR conversion and copy
+                # of a frame nothing will look at are skipped.
                 _read_t0 = time.perf_counter()
-                success, frame = self.source.read()
+                if self._can_skip_decode():
+                    success, frame, _decode = self._grab_then_maybe_retrieve()
+                else:
+                    _decode = True
+                    success, frame = self.source.read()
                 self._last_read_wait_ms = (time.perf_counter() - _read_t0) * 1000.0
-                if not success or frame is None:
+                # A frame is only MISSING if we asked for pixels and did not get them.
+                # A deliberately-grabbed frame has no array by design; treating that as a
+                # failed read made every skipped frame sleep on the failure path and
+                # collapsed capture from 25 fps to 4 fps against a real RTSP camera.
+                if not success or (_decode and frame is None):
                     self._failed_read_count += 1
                     consecutive_empty_reads += 1
 
@@ -1189,8 +1270,12 @@ class InferencePipeline:
                 # The frame has already been read, so gating here keeps the pipeline at the
                 # live edge; a skipped frame still refreshes the preview below.
                 results = None
-                if self._inference_enabled and self._due_for_inference(now_perf):
-                    self._last_inference_at = now_perf
+                # `frame is None` means this one was grabbed, not decoded. The gate is
+                # re-checked here against post-read time, so it CAN come due on a frame we
+                # chose to skip - inferring on None would crash the pipeline.
+                if (frame is not None and self._inference_enabled
+                        and self._due_for_inference(now_perf)):
+                    self._mark_inferred(now_perf)
                     t0 = time.perf_counter()
                     results = self.inference_engine.infer(frame)
                     latency_ms = (time.perf_counter() - t0) * 1000
@@ -1220,11 +1305,29 @@ class InferencePipeline:
                             if not self._thumbnail_captured and self._thumbnail_path:
                                 self.capture_thumbnail(frame)
                 else:
-                    with self._frame_lock:
-                        self._latest_frame = frame.copy()
+                    # GATED frame: no inference ran, so there is nothing drawn on it.
+                    # Since Step 3 this branch fires at CAPTURE rate while the two above
+                    # fire at inference rate, making it the hottest copy in the system -
+                    # measured 0.25 ms and 5.9 MB per 1080p frame, i.e. ~4.35 GB/s of
+                    # memory bandwidth at 750 frames/s, and ~17 GB/s at the 120-camera
+                    # target. Copying is only worth it when something actually reads
+                    # _latest_frame:
+                    #   * a live viewer  -> start_streaming() sets _is_streaming BEFORE
+                    #     the preview polls get_latest_frame(), so this flag is a reliable
+                    #     "someone is watching" signal
+                    #   * the one-time thumbnail
+                    # Skipping also stops a gated frame from OVERWRITING the annotated
+                    # image stored by the branch above: _deliver_job reads _latest_frame
+                    # asynchronously for result_image destinations, and at 5 fps inference
+                    # against 25 fps capture, 4 of every 5 frames used to replace the drawn
+                    # output with an undrawn one before the publisher could read it.
+                    if frame is not None and (self._is_streaming
+                                              or (not self._thumbnail_captured and self._thumbnail_path)):
+                        with self._frame_lock:
+                            self._latest_frame = frame.copy()
 
-                        if not self._thumbnail_captured and self._thumbnail_path:
-                            self.capture_thumbnail(frame)
+                            if not self._thumbnail_captured and self._thumbnail_path:
+                                self.capture_thumbnail(frame)
 
                 # Process detections. Selection happens on the inference thread;
                 # actual network delivery is handed to the background publisher worker
@@ -1314,6 +1417,32 @@ class InferencePipeline:
                 f"Negative ARMYEYE_TARGET_INFERENCE_FPS={v} - ignoring (inferring every frame)")
             return 0.0
         return v
+
+    def _mark_inferred(self, now: float) -> None:
+        """Record an inference WITHOUT letting the schedule drift.
+
+        Anchoring to the actual inference time bakes that frame's read and scheduling
+        overhead into the next deadline, so the frame that should trigger it misses by a
+        few milliseconds and the cycle slips to the FOLLOWING frame. Because inference can
+        only happen when a frame arrives, the achievable rates are stream_fps/n - at 25 fps
+        that is 25/5 = 5.00 or 25/6 = 4.17, with nothing in between. Slipping one frame
+        therefore costs 17% of the requested rate, and it slipped every time: measured
+        4.17 fps against a 5 fps target on 60 real RTSP cameras.
+
+        Advancing the anchor by exactly one period keeps the schedule aligned to the
+        original start instead of compounding per-cycle overhead.
+
+        The re-anchor below is what still guarantees no catch-up burst: if we are already a
+        full period behind (a stall, a reconnect, a slow model load), the schedule is
+        abandoned and restarted from now rather than firing repeatedly to "catch up".
+        """
+        period = (1.0 / self.TARGET_INFERENCE_FPS) if self.TARGET_INFERENCE_FPS > 0 else 0.0
+        if self._last_inference_at is None or period <= 0.0:
+            self._last_inference_at = now
+            return
+        self._last_inference_at += period
+        if now - self._last_inference_at >= period:
+            self._last_inference_at = now          # behind schedule: re-anchor, never burst
 
     def _due_for_inference(self, now: float) -> bool:
         """True when this frame should be inferred.
