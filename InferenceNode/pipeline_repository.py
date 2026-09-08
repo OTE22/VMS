@@ -59,6 +59,8 @@ def _row_to_dict(p: Pipeline) -> Dict[str, Any]:
         "config": cfg,
         "model_id": p.model_id,
         "status": p.status,
+        # Worker assignment; None = unassigned, runnable on any node.
+        "node_id": p.node_id,
         # creator metadata only - never an authorization input
         "owner_id": p.owner_id,
         "owner_username": p.owner_username,

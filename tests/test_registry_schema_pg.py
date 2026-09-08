@@ -19,6 +19,11 @@ from sqlalchemy.exc import IntegrityError, DBAPIError
 from conftest import REPO
 
 
+# The current migration head. Bump when a migration is added - the point of these
+# tests is that upgrade/downgrade round-trips cleanly, not which revision is newest.
+HEAD = "0006_pipeline_node_assignment"
+
+
 def _alembic(pg, *args):
     env = dict(os.environ, ARMYEYE_DATABASE_URL=pg["url"], ARMYEYE_ARTIFACT_ROOT=pg["artifact_root"])
     return subprocess.run([sys.executable, "-m", "alembic", "-c", os.path.join(REPO, "alembic.ini"), *args],
@@ -27,7 +32,7 @@ def _alembic(pg, *args):
 
 def test_head_is_0004_and_registry_tables_exist(pg_guard):
     with pg_guard["engine"].connect() as c:
-        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0005_pipeline_model_integrity"
+        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == HEAD
         tables = {r[0] for r in c.execute(text("SELECT tablename FROM pg_tables WHERE schemaname='public'"))}
     assert {"model_representations", "model_artifacts", "inference_engines", "publishers",
             "node_settings", "media_assets", "pipeline_thumbnails"} <= tables
@@ -141,7 +146,7 @@ def test_downgrade_to_0003_and_reupgrade_are_safe(pg_guard):
     up = _alembic(pg_guard, "upgrade", "head")
     assert up.returncode == 0, up.stdout + up.stderr
     with pg_guard["engine"].connect() as c:
-        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0005_pipeline_model_integrity"
+        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == HEAD
 
 
 # ------------------------------------------------------------------ registry migration ON PostgreSQL
@@ -262,7 +267,7 @@ def test_bootstrap_orders_0004_then_legacy_models_then_0005(pg_guard, tmp_path, 
     monkeypatch.setenv("ARMYEYE_DATABASE_URL", pg_guard["url"])       # alembic env reads it in-process
     bs.bootstrap_database(legacy_root=str(legacy))
     with pg_guard["engine"].connect() as c:
-        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0005_pipeline_model_integrity"
+        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == HEAD
         assert c.execute(text("SELECT status FROM models WHERE model_id='yolo_legacy_1234'")).scalar_one() == "AVAILABLE"
         assert c.execute(text("SELECT model_id FROM pipelines WHERE pipeline_id='legacy-p1'")).scalar_one() == "yolo_legacy_1234"
         sha = c.execute(text("SELECT sha256 FROM model_artifacts")).scalar_one()

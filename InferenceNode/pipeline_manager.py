@@ -312,6 +312,10 @@ class PipelineManager:
             # Runtime truth wins over the stored value.
             pipeline_copy['status'] = self.runtime_status(pipeline_id)
             pipeline_copy['stored_status'] = record.get('status')
+            # Which worker owns it (None = any). Every worker lists EVERY pipeline, so
+            # without this the UI shows another node's cameras as if they were startable
+            # here - which is exactly how the same camera gets started twice.
+            pipeline_copy['node_id'] = record.get('node_id')
             pipeline_copy['stats'] = self.runtime_stats.get(pipeline_id, {
                 'frame_count': 0, 'inference_count': 0, 'fps': 0, 'latency_ms': 0})
 
@@ -549,6 +553,18 @@ class PipelineManager:
         """True when the requested edit touches a field the runtime is built from."""
         return any(field in config for field in self.RUNTIME_AFFECTING_FIELDS)
 
+    def _owns_pipeline(self, pipeline_id: str) -> bool:
+        """Whether THIS node may run the pipeline. Unassigned pipelines belong to everyone."""
+        try:
+            from .pipeline_store import runnable_on_node
+            record = self.store.get(pipeline_id)
+            if record is None:
+                return False
+            return runnable_on_node(record, self.node_id)
+        except Exception as e:                      # never let assignment break startup
+            self.logger.debug(f"node ownership check failed, allowing start: {e}")
+            return True
+
     def start_pipeline(self, pipeline_id: str, model_repo, result_publisher) -> bool:
         """Start a pipeline, reconstructing it entirely from PostgreSQL.
 
@@ -558,6 +574,18 @@ class PipelineManager:
         pipeline_config = self._get_config(pipeline_id)
         if pipeline_config is None:
             self.logger.error(f"Cannot start pipeline {pipeline_id} - no definition in PostgreSQL")
+            return False
+
+        # Worker assignment. A single process caps at ~220-250 inferences/s on the GIL, so
+        # larger deployments run several nodes against this same database; without this
+        # check two of them would happily start the SAME camera, double-decoding the stream
+        # and publishing every detection twice. An UNASSIGNED pipeline (node_id NULL) still
+        # runs anywhere, which is why existing single-node installs are unaffected.
+        if not self._owns_pipeline(pipeline_id):
+            record = self.store.get(pipeline_id) or {}
+            self.logger.warning(
+                f"Refusing to start pipeline {pipeline_id} - assigned to node "
+                f"{record.get('node_id')!r}, this node is {self.node_id!r}")
             return False
 
         # Check if pipeline is actually running, not just in the dictionary

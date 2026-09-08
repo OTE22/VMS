@@ -106,7 +106,12 @@ class InferenceNode:
         import time
         self.app_start_time = time.time()
         
-        self.node_id = node_id or str(uuid.uuid4())
+        # A fresh uuid4 per boot made node identity meaningless: nothing could be
+        # assigned to 'this node' and survive a restart. ARMYEYE_NODE_ID makes it
+        # stable, which is what pipeline->node assignment depends on. The uuid4 is
+        # kept as the last resort so a single-node deployment needs no configuration.
+        self.node_id = (node_id or os.environ.get("ARMYEYE_NODE_ID", "").strip()
+                        or str(uuid.uuid4()))
         self.node_name = node_name or f"InferNode-{platform.node()}"
         self.port = port
 
@@ -2698,6 +2703,48 @@ class InferenceNode:
                 self.logger.error(f"Get pipeline summary error: {str(e)}")
                 return jsonify({'error': str(e)}), 500
         
+        @self.app.route('/api/pipeline/<pipeline_id>/node', methods=['PUT'])
+        @self._admin_csrf
+        def assign_pipeline_node(pipeline_id):
+            """Pin a pipeline to one worker node, or release it.
+
+            A single process caps at ~220-250 inferences/s on the GIL, so larger
+            deployments run several nodes against the same database. Assignment is what
+            stops two of them starting the same camera. Body: {"node_id": "<id>"} to pin,
+            {"node_id": null} to unassign (runnable on any node).
+            """
+            try:
+                from InferenceNode import pipeline_store as ps
+                data = request.get_json(silent=True) or {}
+                if "node_id" not in data:
+                    return jsonify({'error': "body must contain 'node_id' (null to unassign)"}), 400
+                target = data.get("node_id")
+                if target is not None and not isinstance(target, str):
+                    return jsonify({'error': "'node_id' must be a string or null"}), 400
+                try:
+                    result = ps.assign_pipeline_to_node(current_user, pipeline_id, target)
+                except (KeyError, ps.AccessDenied):
+                    # Same 404 for "no such pipeline" and "not an admin": a non-admin must
+                    # not be able to probe which pipelines exist. Matches the other
+                    # pipeline routes.
+                    return jsonify({'error': 'Pipeline not found or access denied'}), 404
+                self._audit_event('pipeline_node_assigned', pipeline_id, result)
+                return jsonify(result)
+            except Exception as e:
+                self.logger.error(f"Assign pipeline node error: {str(e)}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/node/identity', methods=['GET'])
+        def node_identity():
+            # setup_auth installs a global login gate, so no per-route decorator is needed;
+            # this exposes no secrets, only which worker this process is.
+            """This process's stable node id - what you pin pipelines to."""
+            return jsonify({
+                'node_id': self.node_id,
+                'node_name': self.node_name,
+                'stable': bool(os.environ.get('ARMYEYE_NODE_ID', '').strip()),
+            })
+
         @self.app.route('/api/pipeline/<pipeline_id>', methods=['GET'])
         def get_pipeline(pipeline_id):
             """Get pipeline configuration"""

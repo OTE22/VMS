@@ -835,6 +835,9 @@ async function refreshPipelines(preservePreviews = false) {
     }
     
     try {
+        // Every worker lists EVERY pipeline (scoping is per-user, not per-node), so the
+        // page must know which worker it is talking to before offering a Start button.
+        if (MY_NODE_ID === undefined) { await loadNodeIdentity(); }
         const response = await fetch('/api/pipelines');
         const data = await response.json();
         
@@ -2143,7 +2146,7 @@ function renderCardView() {
                         <div>
                             <h6 class="mb-1">${pipeline.name}</h6>
                             <div class="d-flex gap-1">
-                                <span class="badge bg-${statusColor} badge-sm">${capitalizeStatus(pipeline.status)}</span>
+                                <span class="badge bg-${statusColor} badge-sm">${capitalizeStatus(pipeline.status)}</span>${ownerBadge(pipeline)}
                                 <span class="badge ${(pipeline.status === 'running' || pipeline.status === 'starting') ? ((pipeline.inference_enabled === true || pipeline.inference_enabled === undefined) ? 'bg-info' : 'bg-secondary') : 'bg-secondary'} badge-sm" style="display: ${(pipeline.status === 'running' || pipeline.status === 'starting') ? '' : 'none'};">
                                     <i class="fas fa-brain me-1"></i>
                                     ${(pipeline.status === 'running' || pipeline.status === 'starting') ? ((pipeline.inference_enabled === true || pipeline.inference_enabled === undefined) ? 'Inference ON' : 'Inference OFF') : 'Inference OFF'}
@@ -2461,7 +2464,7 @@ function renderListView() {
                         ${pipeline.description ? `<br><small class="text-muted">${pipeline.description}</small>` : ''}
                     </div>
                 </td>
-                <td><span class="badge bg-${statusColor}">${capitalizeStatus(pipeline.status)}</span></td>
+                <td><span class="badge bg-${statusColor}">${capitalizeStatus(pipeline.status)}</span>${ownerBadge(pipeline)}</td>
                 <td>
                     ${pipeline.status === 'running' ? `
                         <div class="d-flex align-items-center justify-content-center">
@@ -2511,8 +2514,8 @@ function renderListView() {
                     <div class="btn-group btn-group-sm">
                         <button class="btn ${pipeline.status === 'running' ? 'btn-warning' : pipeline.status === 'starting' ? 'btn-secondary' : 'btn-success'}" 
                                 onclick="${pipeline.status === 'running' ? 'stopPipeline' : 'startPipeline'}('${pipeline.id}')" 
-                                ${pipeline.status === 'starting' ? 'disabled' : ''}
-                                title="${pipeline.status === 'running' ? 'Stop' : pipeline.status === 'starting' ? 'Starting...' : 'Start'} pipeline">
+                                ${pipeline.status === 'starting' || (pipeline.status !== 'running' && foreignOwner(pipeline)) ? 'disabled' : ''}
+                                title="${foreignOwner(pipeline) ? `Runs on worker '${foreignOwner(pipeline)}' - start it there` : pipeline.status === 'running' ? 'Stop' : pipeline.status === 'starting' ? 'Starting...' : 'Start'} pipeline">
                             <i class="fas fa-${pipeline.status === 'running' ? 'stop' : pipeline.status === 'starting' ? 'spinner fa-spin' : 'play'}"></i>
                         </button>
                         <button class="btn btn-outline-primary" onclick="showPipelineDetails('${pipeline.id}')" title="Details">
@@ -2796,8 +2799,44 @@ function getDeviceInfo(pipeline) {
     };
 }
 
+// ---- worker ownership -------------------------------------------------------------
+// A pipeline pinned to another worker must not be startable from here: this worker would
+// refuse it anyway (409/False), but showing an enabled Start button invites the one
+// mistake that produces duplicate streams and duplicate webhooks.
+let MY_NODE_ID = undefined;
+
+async function loadNodeIdentity() {
+    try {
+        const r = await fetch('/api/node/identity');
+        MY_NODE_ID = r.ok ? (await r.json()).node_id : null;
+    } catch (e) {
+        MY_NODE_ID = null;              // unknown: fall back to permitting, never block
+    }
+}
+
+// The owning worker, or null when this worker may run it.
+// node_id null/empty = unassigned = runnable anywhere (the single-node default).
+function foreignOwner(pipeline) {
+    const owner = pipeline && pipeline.node_id;
+    if (!owner) return null;
+    if (MY_NODE_ID === null || MY_NODE_ID === undefined) return null;
+    return owner === MY_NODE_ID ? null : owner;
+}
+
+function ownerBadge(pipeline) {
+    const owner = foreignOwner(pipeline);
+    if (!owner) return '';
+    return `<span class="badge bg-secondary ms-1" title="Runs on worker '${owner}', not this one">
+              <i class="fas fa-server me-1"></i>${owner}</span>`;
+}
+
 // Pipeline actions
 async function startPipeline(pipelineId) {
+    const owner = foreignOwner((allPipelines || []).find(p => p.id === pipelineId));
+    if (owner) {
+        showAlert('error', `This pipeline runs on worker '${owner}'. Start it there, or reassign it first.`);
+        return;
+    }
     // Show immediate loading feedback
     setButtonLoadingState(pipelineId, true, 'Starting...');
     updateSinglePipelineState(pipelineId, 'starting');

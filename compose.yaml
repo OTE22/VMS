@@ -27,6 +27,10 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - NODE_NAME=${NODE_NAME:-VMS}
+      # Stable worker identity. Without it a fresh uuid4 is generated every boot and
+      # pipeline->node assignment cannot survive a restart. Required once you run more
+      # than one worker against this database; harmless on a single node.
+      - ARMYEYE_NODE_ID=${ARMYEYE_NODE_ID:-vms-1}
       - NODE_PORT=${NODE_PORT:-5555}
       - DISCOVERY_BIND_IP=0.0.0.0
       - DISCOVERY_PORT=8888

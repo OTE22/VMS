@@ -21,7 +21,7 @@ from urllib.parse import urlsplit, urlunsplit
 from sqlalchemy import select
 
 from .auth.db import get_session
-from .data_models import ModelRecord
+from .data_models import ModelRecord, Pipeline
 from .pipeline_repository import repository, normalize_permissions, PERMISSIONS  # noqa: F401
 
 logger = logging.getLogger("InferenceNode.pipeline_store")
@@ -190,6 +190,8 @@ def pipeline_view(record: Dict[str, Any], *, is_admin: bool) -> Dict[str, Any]:
     if is_admin:
         base["config"] = sanitize_config(cfg)
         base["owner_username"] = record.get("owner_username")
+        # Which worker owns this pipeline; None = unassigned (any node may run it).
+        base["node_id"] = record.get("node_id")
         return base
     model = cfg.get("model") or {}
     frame = cfg.get("frame_source") or {}
@@ -205,6 +207,33 @@ def pipeline_view(record: Dict[str, Any], *, is_admin: bool) -> Dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # authorization core
 # --------------------------------------------------------------------------- #
+def assign_pipeline_to_node(admin_user, pipeline_id: str, node_id: Optional[str]) -> Dict[str, Any]:
+    """Pin a pipeline to one worker process, or release it with node_id=None.
+
+    Assignment is the only thing stopping two nodes that share this database from starting
+    the same camera twice. It is admin-only: it decides where work runs, which is an
+    operational control, not a per-pipeline permission.
+    """
+    require_admin(admin_user, "assign pipeline to node")
+    value = (node_id or "").strip() or None
+    with get_session() as s:
+        row = s.execute(select(Pipeline).where(Pipeline.pipeline_id == pipeline_id)).scalar_one_or_none()
+        if row is None:
+            raise KeyError(pipeline_id)
+        before, row.node_id = row.node_id, value
+        s.commit()
+    _audit("pipeline_node_assigned", admin_user, pipeline_id,
+           {"from": before, "to": value})
+    return {"pipeline_id": pipeline_id, "node_id": value, "previous_node_id": before}
+
+
+def runnable_on_node(record: Dict[str, Any], node_id: Optional[str]) -> bool:
+    """An UNASSIGNED pipeline runs anywhere - that is the pre-existing single-node
+    behaviour and why adding this column changed nothing for existing deployments."""
+    assigned = record.get("node_id")
+    return not assigned or assigned == node_id
+
+
 def get_pipeline_for_user(pipeline_id: str, user, required_permission: str = "view",
                           *, require: bool = True) -> Optional[Dict[str, Any]]:
     """The single authorization chokepoint every pipeline operation passes through.

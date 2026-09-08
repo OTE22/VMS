@@ -65,6 +65,12 @@ class Pipeline(Base):
     # models.model_id ON DELETE RESTRICT + the consistency CHECK). config.model.id is a
     # serialized reflection kept in sync by PipelineRepository only.
     model_id = Column(String(255), nullable=True)
+    # Which worker process owns this pipeline. NULL = unassigned, runnable by any node
+    # (the original single-node behaviour). One process caps at ~220-250 inferences/s
+    # on the GIL, so 60 cameras at 5 fps needs several; this is what stops two nodes
+    # both starting the same camera. Deliberately NOT a foreign key - nodes are
+    # runtime processes, not rows, and a retired node must leave definitions intact.
+    node_id = Column(String(255), nullable=True, index=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
