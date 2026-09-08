@@ -1,0 +1,29 @@
+# FACE_DETECTOR on a DIFFERENT host overlay.
+#
+# Append to COMPOSE_FILE when ArmyEye and FACE_DETECTOR no longer share a machine:
+#   COMPOSE_FILE=compose.yaml:compose.prod.yaml:compose.gpu.yaml:compose.remote-face.yaml
+#   FACE_HOST_IP=10.0.0.42          # FACE nginx's real address, in .env
+#
+# WHY THIS IS THE ONLY FILE THE MOVE NEEDS
+# ---------------------------------------
+# Same-host, `face-detector.internal` resolves through the shared `webhook_integration`
+# Docker network to FACE nginx's container IP. That alias does not exist across machines.
+# Everything else is already host-independent and must NOT change:
+#   * WEBHOOK_BASE_URL stays the NAME https://face-detector.internal - never an IP, never
+#     http. FACE's certificate SAN covers that name; an IP would fail hostname verification
+#     and http would send detections (and the bearer token) in clear text.
+#   * FACE's internal CA is mounted from a file, not fetched over Docker networking, so TLS
+#     trust survives the move untouched.
+#   * The bearer token is unchanged (provision the same value on the new host).
+#
+# `extra_hosts` writes /etc/hosts inside the container, which takes precedence over Docker
+# DNS - so the same name now points at the real host. If you have real internal DNS, prefer
+# a DNS record for face-detector.internal and you can drop this overlay entirely.
+#
+# Note: the container still joins the (now empty) external `webhook_integration` network;
+# docker-start.sh creates it if absent. That is harmless - an unused bridge - and keeping it
+# means one less difference between the two deployment modes.
+services:
+  vms:
+    extra_hosts:
+      - "face-detector.internal:${FACE_HOST_IP:?set FACE_HOST_IP in .env when FACE is on another host}"
