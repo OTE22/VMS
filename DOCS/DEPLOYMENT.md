@@ -398,6 +398,8 @@ The two hosts need a **private path** (LAN/VLAN/VPN): the webhook carries detect
 | Registry `degraded` | artifact hash mismatch or missing file | `GET /api/registry/verify` (admin) names each one |
 | First pipeline start times out | cold model load exceeds the 10 s budget | retry; pre-existing, unrelated to deployment |
 | Model listed but unusable | status not `AVAILABLE`+`PASSED` | check `models` / `model_artifacts` |
+| `DELETE /api/media/<id>` returns 409 | a pipeline still references that file | the response lists them; repoint or delete those pipelines, or `?force=true` |
+| Registry `degraded`, "AVAILABLE artifact(s) missing" | a file was removed with `rm` instead of through the API | delete via the API so the row and bytes go together |
 
 Log locations: `docker compose logs vms`, and `InferenceNode/logs/infernode.log` (rotating,
 7-day retention).

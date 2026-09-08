@@ -1131,6 +1131,38 @@ class InferenceNode:
                 self.logger.error(f"Video upload error: {str(e)}")
                 return jsonify({'error': 'Video upload failed'}), 500
 
+        @self.app.route('/api/media/<media_id>', methods=['DELETE'])
+        @self._admin_csrf
+        def delete_media(media_id):
+            """Retire a media asset (admin). Refuses with 409 while any pipeline still
+            references it - media is referenced by a STRING in pipeline config, so unlike
+            models there is no foreign key to refuse the delete for us. `?force=true`
+            overrides deliberately and still reports which pipelines were affected."""
+            try:
+                from InferenceNode import media_registry as _media
+                force = (request.args.get('force', '') or '').strip().lower() in ('1', 'true', 'yes')
+                from flask_login import current_user
+                r = _media.delete_media(media_id, force=force)
+                outcome = r.get('outcome')
+                if outcome == 'not_found':
+                    return jsonify({'error': 'Media not found', 'media_id': media_id}), 404
+                if outcome == 'referenced':
+                    return jsonify({'error': 'Media is referenced by pipelines and cannot be deleted',
+                                    'media_id': media_id, 'relative_path': r.get('relative_path'),
+                                    'pipelines': r.get('pipelines'),
+                                    'hint': 'repoint or delete those pipelines, or pass ?force=true'}), 409
+                if outcome != 'deleted':
+                    self.logger.error(f"Media delete failed for {media_id}: {r.get('error')}")
+                    return jsonify({'error': 'Delete failed; the media asset is unchanged'}), 500
+                self._audit_event('media_deleted', current_user, r.get('relative_path'),
+                                  {'media_id': media_id, 'forced': force,
+                                   'was_referenced_by': [p['pipeline_id'] for p in (r.get('was_referenced_by') or [])]})
+                return jsonify({'status': 'deleted', 'media_id': media_id,
+                                'relative_path': r.get('relative_path')})
+            except Exception as e:
+                self.logger.error(f"Media delete error: {str(e)}")
+                return jsonify({'error': 'Media delete failed'}), 500
+
         @self.app.route('/api/models/download-ultralytics', methods=['POST'])
         @self._admin_csrf
         def download_ultralytics_model():

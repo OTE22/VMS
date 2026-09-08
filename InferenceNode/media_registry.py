@@ -228,6 +228,101 @@ def verify_all() -> Dict[str, list]:
     return report
 
 
+def referencing_pipelines(relative_path: str) -> List[dict]:
+    """Pipelines whose frame source points at this media file.
+
+    Media is the ONE artifact class the database cannot protect: models are guarded by
+    `pipelines.model_id` with ON DELETE RESTRICT, but a pipeline references media by the
+    STRING `frame_source.config.relative_source` inside its config JSON, so there is no FK
+    to refuse the delete. This check is therefore not a convenience - it is the only thing
+    standing between a delete and a silently broken pipeline.
+
+    Legacy pipelines that still carry an absolute `source` path are matched on basename,
+    because those resolve through the same file at runtime (media_library's legacy
+    compatibility path).
+    """
+    from .pipeline_repository import repository
+    base = os.path.basename(relative_path)
+    out = []
+    for r in repository.list(is_admin=True):
+        fs = (r.get("config") or {}).get("frame_source") or {}
+        cfg = fs.get("config") or {}
+        rel = cfg.get("relative_source")
+        src = cfg.get("source")
+        hit = (rel == relative_path) or (isinstance(src, str) and os.path.basename(src.replace("\\", "/")) == base)
+        if hit:
+            out.append({"pipeline_id": r["pipeline_id"], "name": r.get("name"), "status": r.get("status")})
+    return out
+
+
+def delete_media(media_id: str, *, force: bool = False) -> dict:
+    """Retire a media asset: bytes to managed trash, then the row, then purge.
+
+    Mirrors the model/engine deletion machine (section 3e of the readiness report):
+        AVAILABLE -> DELETING -> move file to <media>/.trash -> delete row -> COMMIT -> purge
+    A failure after the move restores the file, so the outcome is always either
+    "deleted" or "the asset is intact" - never a row pointing at bytes that are gone.
+
+    Outcomes: deleted | not_found | referenced | failed
+    `force=True` deletes despite references; the caller is responsible for that decision
+    and the referencing pipelines are still reported back.
+    """
+    with get_session() as s:
+        m = s.execute(select(MediaAsset).where(MediaAsset.media_id == media_id)).scalar_one_or_none()
+        if m is None:
+            return {"outcome": "not_found", "media_id": media_id}
+        rel, status = m.relative_path, m.status
+
+    users = referencing_pipelines(rel)
+    if users and not force:
+        return {"outcome": "referenced", "media_id": media_id, "relative_path": rel,
+                "pipelines": users}
+
+    # 1. mark DELETING so nothing serves it while the bytes are moving
+    with get_session() as s:
+        m = s.execute(select(MediaAsset).where(MediaAsset.media_id == media_id)).scalar_one()
+        if m.status == S.AVAILABLE.value:
+            m.status = transition(m.status, S.DELETING).value
+            m.reason = Reason.DELETE_INTERRUPTED.value   # cleared on success; a crash leaves this visible
+
+    # 2. move the bytes to managed trash (recoverable until the row is gone)
+    moved = None
+    try:
+        final = ap.resolve("media", rel)
+        if os.path.isfile(final):
+            trash = ap.trash_path("media", rel)
+            os.makedirs(os.path.dirname(trash), exist_ok=True)
+            os.replace(final, trash)
+            moved = (trash, final)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"[MEDIA] could not stage {rel} for deletion: {e}")
+        return {"outcome": "failed", "media_id": media_id, "relative_path": rel,
+                "error": f"{e.__class__.__name__}: {e}"}
+
+    # 3. remove the row; restore the bytes if that fails
+    try:
+        with get_session() as s:
+            m = s.execute(select(MediaAsset).where(MediaAsset.media_id == media_id)).scalar_one()
+            s.delete(m)
+    except Exception as e:  # noqa: BLE001
+        if moved and os.path.exists(moved[0]):
+            os.makedirs(os.path.dirname(moved[1]), exist_ok=True)
+            os.replace(moved[0], moved[1])
+        logger.error(f"[MEDIA] row delete failed for {rel}, file restored: {e}")
+        return {"outcome": "failed", "media_id": media_id, "relative_path": rel,
+                "error": f"{e.__class__.__name__}: {e}"}
+
+    # 4. only now purge the trash copy
+    if moved:
+        try:
+            os.remove(moved[0])
+        except OSError:
+            pass
+    logger.info(f"[MEDIA] deleted {rel} (was {status}){' despite references' if users else ''}")
+    return {"outcome": "deleted", "media_id": media_id, "relative_path": rel,
+            "was_referenced_by": users}
+
+
 def migrate_legacy_media(legacy_media_dir: str, report: Optional[MigrationReport] = None) -> MigrationReport:
     """Physical migration of the legacy media dir into ARTIFACT_ROOT/media (stage/fsync/
     verify/promote/register; legacy retained). Relative paths are preserved so existing
