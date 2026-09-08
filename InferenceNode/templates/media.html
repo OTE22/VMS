@@ -1,0 +1,179 @@
+{% extends "base.html" %}
+
+{% block title %}Media | مديرية التأليل{% endblock %}
+
+{% block content %}
+<div class="row">
+  <div class="col-12">
+    <div class="card mb-4">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="card-title mb-0"><i class="fas fa-photo-film me-2"></i>Media Library</h5>
+        <div class="d-flex align-items-center gap-2">
+          <span class="text-muted small" id="mediaSummary">Loading…</span>
+          <button class="btn btn-outline-secondary btn-sm" onclick="loadMedia()" title="Refresh">
+            <i class="fas fa-rotate"></i>
+          </button>
+        </div>
+      </div>
+      <div class="card-body">
+        <p class="text-muted small mb-3">
+          Files registered in the media registry. Each row is tracked with a SHA-256 hash and a
+          lifecycle status — a file existing on disk is never on its own proof that it is usable.
+          Upload new media from the Pipeline Builder when configuring a video-file source.
+        </p>
+        <div id="mediaList">
+          <div class="text-muted"><i class="fas fa-spinner fa-spin me-2"></i>Loading media…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Delete confirmation -->
+<div class="modal fade" id="deleteMediaModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="fas fa-trash me-2"></i>Delete media</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" id="deleteMediaBody"></div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-danger" id="confirmDeleteMedia">Delete</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let mediaCache = [];
+let pendingDelete = null;
+
+function fmtSize(b) {
+  if (!b) return '—';
+  const mb = b / (1024 * 1024);
+  return mb >= 1024 ? (mb / 1024).toFixed(2) + ' GB' : mb.toFixed(1) + ' MB';
+}
+
+// Lifecycle badge. status (lifecycle) and validation_status (outcome) are separate fields;
+// only AVAILABLE + PASSED is servable, so anything else is shown as a warning rather than
+// being quietly rendered the same as a healthy row.
+function mediaStatusBadge(m) {
+  const usable = m.status === 'AVAILABLE' && m.validation_status === 'PASSED';
+  const cls = usable ? 'bg-success' : (m.status === 'STAGING' || m.status === 'VALIDATING') ? 'bg-info' : 'bg-danger';
+  const reason = m.reason ? ` (${esc(m.reason)})` : '';
+  const title = usable ? 'Registered and verified' :
+    `Not usable: status=${esc(m.status)} validation=${esc(m.validation_status)}${reason}`;
+  return `<span class="badge ${cls}" title="${title}">${esc(m.status)}${usable ? '' : ' / ' + esc(m.validation_status)}</span>`;
+}
+
+// Media is referenced by a STRING inside pipeline config, so unlike models there is no
+// foreign key to refuse a delete. Showing the references up front makes the 409 predictable
+// instead of surprising.
+function refsCell(m) {
+  if (!m.references || !m.references.length) {
+    return '<span class="text-muted small">—</span>';
+  }
+  const names = m.references.map(r => `<span class="badge bg-secondary me-1">${esc(r.name || r.pipeline_id)}</span>`).join('');
+  return `<span title="Used by ${m.references.length} pipeline(s); delete is refused while in use">${names}</span>`;
+}
+
+async function loadMedia() {
+  const list = document.getElementById('mediaList');
+  try {
+    const data = await fetchJSON('/api/media');
+    mediaCache = data.media || [];
+    document.getElementById('mediaSummary').textContent =
+      `${data.count} file(s) · ${fmtSize(data.total_size_bytes)}`;
+
+    if (!mediaCache.length) {
+      list.innerHTML = `<div class="text-muted text-center py-4">
+        <i class="fas fa-folder-open fa-2x mb-2 d-block"></i>
+        No media registered yet. Upload a video from the Pipeline Builder.</div>`;
+      return;
+    }
+
+    let html = `<div class="table-responsive"><table class="table table-sm align-middle">
+      <thead><tr>
+        <th>File</th><th>Status</th><th>Size</th><th>SHA-256</th>
+        <th>Used by</th><th>Uploaded</th><th class="text-end">Actions</th>
+      </tr></thead><tbody>`;
+    for (const m of mediaCache) {
+      const inUse = m.references && m.references.length;
+      html += `<tr>
+        <td><code>${esc(m.relative_path)}</code>
+            ${m.original_filename && m.original_filename !== m.relative_path
+              ? `<br><small class="text-muted">${esc(m.original_filename)}</small>` : ''}</td>
+        <td>${mediaStatusBadge(m)}</td>
+        <td class="text-nowrap">${fmtSize(m.size_bytes)}</td>
+        <td><code class="small text-muted">${esc(m.sha256 || '—')}</code></td>
+        <td>${refsCell(m)}</td>
+        <td class="text-nowrap small text-muted">${m.created_at ? fmtUtc(m.created_at) : '—'}</td>
+        <td class="text-end">
+          <button class="btn btn-outline-danger btn-sm"
+                  onclick="askDeleteMedia('${esc(m.media_id)}')"
+                  title="${inUse ? 'In use by a pipeline — deletion will be refused' : 'Delete this media file'}">
+            <i class="fas fa-trash"></i>
+          </button>
+        </td></tr>`;
+    }
+    list.innerHTML = html + '</tbody></table></div>';
+  } catch (e) {
+    list.innerHTML = `<div class="text-danger"><i class="fas fa-exclamation-triangle me-2"></i>
+      Could not load media: ${esc(e.message || e)}</div>`;
+  }
+}
+
+function askDeleteMedia(mediaId) {
+  const m = mediaCache.find(x => x.media_id === mediaId);
+  if (!m) return;
+  pendingDelete = mediaId;
+  const inUse = m.references && m.references.length;
+  document.getElementById('deleteMediaBody').innerHTML = `
+    <p>Delete <code>${esc(m.relative_path)}</code> (${fmtSize(m.size_bytes)})?</p>
+    ${inUse ? `<div class="alert alert-warning mb-0">
+        <i class="fas fa-triangle-exclamation me-2"></i>
+        This file is used by ${m.references.length} pipeline(s):
+        ${m.references.map(r => `<strong>${esc(r.name || r.pipeline_id)}</strong>`).join(', ')}.
+        <br>Deletion will be <strong>refused</strong> — repoint or delete those pipelines first.
+      </div>`
+     : `<p class="text-muted small mb-0">The file is moved to managed trash and the registry
+        row removed only after that succeeds. This cannot be undone.</p>`}`;
+  document.getElementById('confirmDeleteMedia').disabled = !!inUse;
+  new bootstrap.Modal(document.getElementById('deleteMediaModal')).show();
+}
+
+document.getElementById('confirmDeleteMedia').addEventListener('click', async () => {
+  if (!pendingDelete) return;
+  const btn = document.getElementById('confirmDeleteMedia');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Deleting…';
+  try {
+    const r = await apiCall(`/api/media/${encodeURIComponent(pendingDelete)}`, { method: 'DELETE' });
+    const body = await r.json().catch(() => ({}));
+    if (r.ok) {
+      showAlert('success', `Deleted ${body.relative_path || 'media'}`);
+    } else if (r.status === 409) {
+      // The server is the authority on references, not this page's cached view.
+      const names = (body.pipelines || []).map(p => p.name || p.pipeline_id).join(', ');
+      showAlert('error', `Still in use by: ${names || 'a pipeline'} — not deleted`);
+    } else {
+      showAlert('error', body.error || `Delete failed (HTTP ${r.status})`);
+    }
+  } catch (e) {
+    showAlert('error', `Delete failed: ${e.message || e}`);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = 'Delete';
+    pendingDelete = null;
+    bootstrap.Modal.getInstance(document.getElementById('deleteMediaModal')).hide();
+    loadMedia();
+  }
+});
+
+document.addEventListener('DOMContentLoaded', loadMedia);
+</script>
+{% endblock %}

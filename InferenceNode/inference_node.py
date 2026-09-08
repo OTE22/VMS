@@ -622,6 +622,12 @@ class InferenceNode:
             """Model management page (admin only)"""
             return render_template('models.html', node_info=self.node_info)
         
+        @self.app.route('/media')
+        @self._admin_required
+        def media_page():
+            """Media management page (admin only)."""
+            return render_template('media.html', node_info=self.node_info)
+
         @self.app.route('/pipeline-builder')
         def pipeline_page():
             """Pipeline builder page"""
@@ -1130,6 +1136,37 @@ class InferenceNode:
             except Exception as e:
                 self.logger.error(f"Video upload error: {str(e)}")
                 return jsonify({'error': 'Video upload failed'}), 500
+
+        @self.app.route('/api/media', methods=['GET'])
+        @self._admin_required
+        def list_media_assets():
+            """Registry view of media: lifecycle status, integrity and who references each
+            file. Admin-only because it exposes which pipelines use which asset. Returns
+            RELATIVE paths only - never a host path."""
+            try:
+                from InferenceNode import media_registry as _media
+                out = []
+                for a in _media.list_assets():
+                    refs = _media.referencing_pipelines(a["relative_path"])
+                    out.append({
+                        "media_id": a["media_id"],
+                        "relative_path": a["relative_path"],
+                        "original_filename": a["original_filename"],
+                        "media_type": a["media_type"],
+                        "size_bytes": a["size_bytes"],
+                        "sha256": (a["sha256"] or "")[:12],
+                        "status": a["status"],
+                        "validation_status": a["validation_status"],
+                        "reason": a["reason"],
+                        "created_at": a["created_at"],
+                        "references": refs,
+                    })
+                total = sum(x["size_bytes"] or 0 for x in out)
+                return jsonify({"status": "success", "media": out, "count": len(out),
+                                "total_size_bytes": total})
+            except Exception as e:
+                self.logger.error(f"Media listing error: {str(e)}")
+                return jsonify({'error': 'Could not list media'}), 500
 
         @self.app.route('/api/media/<media_id>', methods=['DELETE'])
         @self._admin_csrf
