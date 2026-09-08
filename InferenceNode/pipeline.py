@@ -91,6 +91,16 @@ class InferencePipeline:
         # detection_config.target_inference_fps.
         self.TARGET_INFERENCE_FPS = self._env_target_fps()
         self._last_inference_at = None      # None = never inferred yet
+
+        # --- live-source reconnect (Step 5) --------------------------------------------
+        # A camera that drops must not end its pipeline permanently, and a dead source must
+        # not spin a CPU core. Bounded backoff, unbounded attempts: a camera can come back
+        # hours later and should be picked up when it does.
+        self.RECONNECT_INITIAL_DELAY = 1.0
+        self.RECONNECT_MAX_DELAY = 30.0
+        self.FAILED_READS_BEFORE_RECONNECT = 30      # ~1.2 s at 25 fps
+        self.FAILED_READ_SLEEP = 0.02                # stops the hot spin on a dead source
+        self._reconnect_attempts = 0
         
         # Frame source configuration for auto-delete functionality
         self._frame_source_config = None
@@ -925,6 +935,64 @@ class InferencePipeline:
         capture_type = self._frame_source_config.get('capture_type', '')
         return capture_type in ['folder', 'image_folder']
     
+    def _is_live_source(self) -> bool:
+        """True for sources that can legitimately drop and come back (cameras).
+
+        A video file reaching its end is NOT a disconnect - reopening it would silently
+        restart playback - so files and folders are excluded and keep their existing
+        end-of-stream behaviour.
+        """
+        if not self._frame_source_config:
+            return False
+        return self._frame_source_config.get('capture_type', '') in (
+            'ipcam', 'ip_camera', 'webcam', 'realsense', 'basler', 'genicam')
+
+    def _sleep_interruptible(self, seconds: float) -> bool:
+        """Sleep, but wake immediately on stop. Returns False if a stop was requested."""
+        deadline = time.perf_counter() + seconds
+        while time.perf_counter() < deadline:
+            if self._stop_requested:
+                return False
+            time.sleep(min(0.25, deadline - time.perf_counter()))
+        return not self._stop_requested
+
+    def _reconnect_source(self) -> bool:
+        """Reconnect a live source with bounded exponential backoff.
+
+        Returns True when reconnected, False when the pipeline should stop (stop requested,
+        or the source is not the kind that can be reconnected). Delay doubles 1s -> 30s and
+        is then held; attempts are unbounded because a camera may return at any time.
+        """
+        if not self._is_live_source():
+            return False
+        delay = min(self.RECONNECT_INITIAL_DELAY * (2 ** self._reconnect_attempts),
+                    self.RECONNECT_MAX_DELAY)
+        self._reconnect_attempts += 1
+        self.logger.warning(
+            f"Source unavailable - reconnect attempt {self._reconnect_attempts} in {delay:.0f}s")
+        if not self._sleep_interruptible(delay):
+            return False
+        try:
+            try:
+                self.source.stop()          # release the old handle before reopening
+            except Exception:
+                pass
+            self.source.connect()
+            if self.source.isOpened():
+                # NOTE: do NOT reset the backoff here. cv2.VideoCapture reports a dead RTSP
+                # stream as "opened", so treating this as success made the backoff restart
+                # at 1s forever (measured: 78 reconnects in 200s against a dead camera).
+                # The counter is reset only when a frame is actually READ, which is the
+                # only real evidence the camera is back.
+                self.logger.info(
+                    f"Source handle reopened (attempt {self._reconnect_attempts}) - "
+                    f"awaiting frames")
+                return True
+            self.logger.warning("Reconnect attempt did not open the source")
+        except Exception as e:
+            self.logger.warning(f"Reconnect attempt failed: {e.__class__.__name__}: {e}")
+        return not self._stop_requested     # keep trying unless we are shutting down
+
     def _delete_current_image(self):
         """Delete the current image file if auto-delete is enabled"""
         if not self._should_auto_delete_images():
@@ -1055,6 +1123,12 @@ class InferencePipeline:
                             self.logger.error(f"Reconnection failed: {e}")
                             continue
                     else:
+                        # A live camera dropping is routine (network blip, PoE reset,
+                        # reboot). Retry with backoff instead of ending the pipeline;
+                        # _reconnect_source returns False only when stopping or when the
+                        # source is a file/folder, where end-of-stream really is terminal.
+                        if self._reconnect_source():
+                            continue
                         self.logger.warning("Source disconnected, ending pipeline")
                         break
 
@@ -1074,10 +1148,28 @@ class InferencePipeline:
                             consecutive_empty_reads = 0
                         continue
                     else:
+                        # Never spin: a dead source used to burn a core here returning
+                        # instantly forever. Sleep briefly, and once failures persist treat
+                        # it as a disconnect and reconnect (live sources only).
+                        if consecutive_empty_reads >= self.FAILED_READS_BEFORE_RECONNECT:
+                            if self._reconnect_source():
+                                consecutive_empty_reads = 0
+                                continue
+                            if self._is_live_source():
+                                break                      # stopping
+                            self.logger.info("End of stream - ending pipeline")
+                            break
+                        if not self._sleep_interruptible(self.FAILED_READ_SLEEP):
+                            break
                         continue
 
-                # Frame successfully read
+                # Frame successfully read - the ONLY proof the source is genuinely back,
+                # so this is where the reconnect backoff resets.
+                if self._reconnect_attempts:
+                    self.logger.info(
+                        f"Source recovered after {self._reconnect_attempts} reconnect attempt(s)")
                 consecutive_empty_reads = 0
+                self._reconnect_attempts = 0
                 self._frame_counter += 1
                 self._last_capture_wall = time.time()
 
