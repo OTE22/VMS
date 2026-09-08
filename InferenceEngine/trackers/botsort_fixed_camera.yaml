@@ -1,0 +1,32 @@
+# BoT-SORT tuned for FIXED cameras (the ArmyEye default).
+#
+# Identical to Ultralytics' stock botsort.yaml except for ONE line: gmc_method.
+#
+# Stock botsort.yaml ships `gmc_method: sparseOptFlow`, which runs Global Motion
+# Compensation - goodFeaturesToTrack + calcOpticalFlowPyrLK - on EVERY tracked frame to
+# cancel out CAMERA movement. Fixed CCTV cameras do not move, so that work is pure
+# overhead. Measured on an RTX 5090 against real 1080p video:
+#
+#     botsort, gmc_method=sparseOptFlow   8.42 ms/inference   119 inf/s/thread
+#     botsort, gmc_method=none            2.54 ms/inference   393 inf/s/thread   3.31x
+#
+# End to end that moved the stable ceiling from 35 to 40 cameras per process at
+# 25 fps capture + 5 fps inference.
+#
+# If you deploy PTZ cameras that actually pan/tilt while tracking, point that pipeline
+# back at stock `botsort.yaml` via ARMYEYE_TRACKER_CONFIG - motion compensation is what
+# keeps track IDs stable when the whole scene shifts.
+tracker_type: botsort
+track_high_thresh: 0.25 # First-stage match threshold
+track_low_thresh: 0.1 # Second-stage threshold for low-score matches
+new_track_thresh: 0.25 # Start a new track if no match >= this
+track_buffer: 30 # Frames to keep lost tracks alive
+match_thresh: 0.8 # Association similarity threshold
+fuse_score: True # Fuse detection score with motion/IoU for matching
+# BoT-SORT specifics
+gmc_method: none # <-- the change: fixed cameras need no motion compensation
+# ReID model related thresh
+proximity_thresh: 0.5
+appearance_thresh: 0.8
+with_reid: False
+model: auto

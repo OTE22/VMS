@@ -55,7 +55,7 @@ class UltralyticsEngine(BaseInferenceEngine):
         # Note: Standalone strongsort package has Python 3.12 compatibility issues
         # Bot-SORT is the best alternative and works perfectly with Ultralytics
         # Performance: Bot-SORT ≈ StrongSORT > OCSORT > ByteTrack
-        self.tracker = "botsort.yaml" if self.tracking_enabled else None
+        self.tracker = self._resolve_tracker() if self.tracking_enabled else None
         print(f"[STRONGSORT INIT] Bot-SORT tracking initialized (StrongSORT-like): tracking_enabled={self.tracking_enabled}, tracker={self.tracker}")
         
         # Configure Ultralytics to be less verbose
@@ -88,6 +88,24 @@ class UltralyticsEngine(BaseInferenceEngine):
             return bool(torch.cuda.is_available())
         except Exception:
             return False
+
+    # Stock botsort.yaml runs Global Motion Compensation (sparseOptFlow) on EVERY tracked
+    # frame to cancel out CAMERA movement. On fixed CCTV that is pure overhead: measured
+    # 8.42 ms/inference with it vs 2.54 ms without (3.31x), which moved the stable ceiling
+    # from 35 to 40 cameras per process. Default to the fixed-camera config; PTZ deployments
+    # that pan while tracking should set ARMYEYE_TRACKER_CONFIG=botsort.yaml to get it back.
+    TRACKER_ENV = "ARMYEYE_TRACKER_CONFIG"
+    DEFAULT_TRACKER = "botsort_fixed_camera.yaml"
+
+    def _resolve_tracker(self) -> str:
+        configured = (os.environ.get(self.TRACKER_ENV) or "").strip() or self.DEFAULT_TRACKER
+        # A bare Ultralytics name (botsort.yaml / bytetrack.yaml) is passed through untouched
+        # so the stock trackers stay reachable; ours is shipped alongside the engines.
+        if os.path.isabs(configured) or os.sep in configured:
+            return configured
+        local = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             "trackers", configured)
+        return local if os.path.isfile(local) else configured
 
     def _resolve_device(self, device: str) -> str:
         """Resolve the requested device to the string the runtime will actually use.
