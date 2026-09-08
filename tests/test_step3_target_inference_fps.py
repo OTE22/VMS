@@ -172,7 +172,9 @@ def test_the_gate_is_actually_wired_into_the_run_loop():
     """A correct gate that nothing calls would pass every test above."""
     src = open(os.path.join(REPO, "InferenceNode", "pipeline.py"), encoding="utf-8").read()
     i = src.index("results = None")
-    assert "_due_for_inference(now_perf)" in src[i:i + 400]
-    assert "self._last_inference_at = now_perf" in src[i:i + 400]
+    assert "_due_for_inference(now_perf)" in src[i:i + 900]
+    # Step 9 replaced the direct assignment with a drift-free scheduler; the anchor must
+    # still be recorded on every inference, just without compounding per-cycle overhead.
+    assert "self._mark_inferred(now_perf)" in src[i:i + 900]
     # the frame must still be READ every iteration - gating happens after the read
     assert src.index("self.source.read()") < i, "inference gate must come after the frame read"
