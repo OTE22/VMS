@@ -23,14 +23,16 @@ REV=$(docker exec VMS-db psql -U armeye -d armeye -tAc "select version_num from 
 T=$(docker exec VMS-db psql -U armeye -d armeye -tAc "select count(*) from information_schema.tables where table_schema='public'" 2>/dev/null)
 [ "${T:-0}" -ge 14 ] && ok "tables present: $T" || no "tables present: ${T:-0} (expected >=14)"
 
-echo "=== 3. clean install, no phantom data ==="
-for t in pipelines models media_assets pipeline_thumbnails inference_engines; do
+echo "=== 3. registry contents (counts are informational; consistency is checked in 7) ==="
+# NOT asserted as zero: a deployed system legitimately accumulates models, media and
+# pipelines. What matters is that every registered row resolves to real bytes, which the
+# reconciliation in section 7 proves. Only the builtin engines have a required floor.
+for t in pipelines models media_assets pipeline_thumbnails; do
   n=$(docker exec VMS-db psql -U armeye -d armeye -tAc "select count(*) from $t" 2>/dev/null)
-  case "$t" in
-    inference_engines) [ "${n:-0}" -ge 5 ] && ok "$t=$n (builtins registered)" || no "$t=${n:-?} (expected >=5 builtins)";;
-    *)                 [ "${n:-1}" -eq 0 ] && ok "$t=0 (clean)"                || no "$t=${n:-?} (expected 0 on a clean install)";;
-  esac
+  echo "  ----  $t=${n:-?}"
 done
+n=$(docker exec VMS-db psql -U armeye -d armeye -tAc "select count(*) from inference_engines" 2>/dev/null)
+[ "${n:-0}" -ge 5 ] && ok "inference_engines=$n (builtins registered)" || no "inference_engines=${n:-?} (expected >=5 builtins)"
 
 echo "=== 4. artifact root writable + laid out ==="
 docker exec VMS sh -c 'for k in models engines media thumbnails; do [ -d "/app/InferenceNode/data/$k" ] || exit 1; done' \
