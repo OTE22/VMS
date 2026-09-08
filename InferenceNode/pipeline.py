@@ -81,6 +81,16 @@ class InferencePipeline:
         # Latency tracking over rolling window
         self._inference_latencies = []  # Store inference latencies in milliseconds
         self._latency_window_size = 100  # Keep last 100 inference times for rolling average
+
+        # --- target inference rate (Step 3) --------------------------------------------
+        # Frames are ALWAYS read so the decoder is drained and the pipeline stays at the
+        # live edge; inference runs at most TARGET_INFERENCE_FPS times per second. A 25 fps
+        # camera can therefore be WATCHED at 25 fps while AI samples 5 fps.
+        # 0 = infer every frame (the historical behaviour).
+        # Node-wide default: ARMYEYE_TARGET_INFERENCE_FPS. Per-pipeline override:
+        # detection_config.target_inference_fps.
+        self.TARGET_INFERENCE_FPS = self._env_target_fps()
+        self._last_inference_at = None      # None = never inferred yet
         
         # Frame source configuration for auto-delete functionality
         self._frame_source_config = None
@@ -1083,9 +1093,12 @@ class InferencePipeline:
                     ]
                     self.logger.debug(f"Frame count: {self._frame_counter}, FPS: {self._calculate_rolling_fps(now_perf):.1f}")
 
-                # Run inference if enabled
+                # Run inference if enabled AND this frame is due under the target rate.
+                # The frame has already been read, so gating here keeps the pipeline at the
+                # live edge; a skipped frame still refreshes the preview below.
                 results = None
-                if self._inference_enabled:
+                if self._inference_enabled and self._due_for_inference(now_perf):
+                    self._last_inference_at = now_perf
                     t0 = time.perf_counter()
                     results = self.inference_engine.infer(frame)
                     latency_ms = (time.perf_counter() - t0) * 1000
@@ -1191,6 +1204,45 @@ class InferencePipeline:
             print(f"Pipeline {self.id}: Stopped")
 
 
+    @staticmethod
+    def _env_target_fps() -> float:
+        """Node-wide default target inference rate. An invalid value is ignored (0 = every
+        frame) and logged, rather than silently changing how much of the stream is analysed."""
+        raw = (os.environ.get("ARMYEYE_TARGET_INFERENCE_FPS") or "").strip()
+        if not raw:
+            return 0.0
+        try:
+            v = float(raw)
+        except ValueError:
+            logging.getLogger(__name__).warning(
+                f"Invalid ARMYEYE_TARGET_INFERENCE_FPS={raw!r} - ignoring (inferring every frame)")
+            return 0.0
+        if v < 0:
+            logging.getLogger(__name__).warning(
+                f"Negative ARMYEYE_TARGET_INFERENCE_FPS={v} - ignoring (inferring every frame)")
+            return 0.0
+        return v
+
+    def _due_for_inference(self, now: float) -> bool:
+        """True when this frame should be inferred.
+
+        Deliberately NOT a scheduler: it never queues, never sleeps and only ever considers
+        the frame in hand, so a skipped frame is dropped immediately and no backlog of stale
+        frames can accumulate. `_last_inference_at` is set to the ACTUAL inference time
+        rather than advanced by a fixed step, so a stall cannot be followed by a burst of
+        catch-up inferences.
+        """
+        if self.TARGET_INFERENCE_FPS <= 0:
+            return True                                   # 0 = infer every frame
+        if self._last_inference_at is None:
+            return True                                   # first frame after start
+        # 1 microsecond of boundary tolerance. Frame timestamps that land exactly on an
+        # interval boundary lose to floating-point representation (0.6 - 0.4 is
+        # 0.19999999999999996, which is < 0.2), pushing that inference to the NEXT frame and
+        # silently running below the requested rate - measurably so when the target divides
+        # the stream rate: 10 fps from a 30 fps camera yielded 25 inferences instead of 30.
+        return (now - self._last_inference_at) >= (1.0 / self.TARGET_INFERENCE_FPS) - 1e-6
+
     def _apply_detection_config(self, cfg: Dict[str, Any]):
         """Validate and apply detection_config overrides. Invalid values are
         rejected (kept at default) with a warning rather than crashing."""
@@ -1225,6 +1277,9 @@ class InferencePipeline:
         self.PUBLISH_RETRY_BACKOFF = num('publish_retry_backoff', self.PUBLISH_RETRY_BACKOFF, 1.0)
         self.PUBLISHER_SHUTDOWN_TIMEOUT_SECONDS = num('publisher_shutdown_timeout_seconds', self.PUBLISHER_SHUTDOWN_TIMEOUT_SECONDS, 0.0)
         self.PUBLISH_QUEUE_SIZE = int(num('publish_queue_size', self.PUBLISH_QUEUE_SIZE, 1))
+        # Capped at 1000: a target above any real camera rate means 'every frame' anyway,
+        # and a typo like 5000 should not read as a meaningful setting.
+        self.TARGET_INFERENCE_FPS = num('target_inference_fps', self.TARGET_INFERENCE_FPS, 0.0, 1000.0)
 
     def configure(self, frame_source_config, inference_engine_config, result_publisher: ResultPublisher, detection_config=None):
 
@@ -1279,6 +1334,7 @@ class InferencePipeline:
         self._frame_timestamps = []
         self._frame_counter = 0
         self._inference_counter = 0
+        self._last_inference_at = None  # first frame after start is always inferred
         self._inference_latencies = []  # Reset latency tracking
         
         self.thread = threading.Thread(target=self.run)

@@ -45,6 +45,11 @@ services:
       - WEBHOOK_AUTH_REQUIRED=${WEBHOOK_AUTH_REQUIRED:-true}
       # Managed artifact plane (models / engines / media / thumbnails), registered in PostgreSQL.
       - ARMYEYE_ARTIFACT_ROOT=/app/InferenceNode/data
+      # Target inference rate per pipeline. Frames are still READ at the camera's full rate
+      # (so preview stays smooth and the pipeline stays at the live edge) but AI runs at most
+      # this many times per second. 0/unset = infer every frame.
+      # Per-pipeline override: detection_config.target_inference_fps
+      - ARMYEYE_TARGET_INFERENCE_FPS=${ARMYEYE_TARGET_INFERENCE_FPS:-0}
       # Config-encryption key arrives as a MOUNTED secret; the entrypoint stages a private
       # 0400 copy in the tmpfs below and points the app at it (bind mounts cannot carry
       # restrictive modes on every host). Never baked into the image, never in PostgreSQL.
