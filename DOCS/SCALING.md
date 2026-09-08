@@ -1,5 +1,19 @@
 # Scaling ArmyEye — measured capacity
 
+> ## ⚠ Two defaults changed
+>
+> **`gmc_method: none` (tracker) — WRONG FOR PTZ CAMERAS.** Motion compensation is off by
+> default because fixed CCTV does not need it (3.31x faster tracking). A PTZ camera that
+> pans **while tracking** needs it back, or it will suffer track-ID switches and re-send
+> the same person after every movement. Set `ARMYEYE_TRACKER_CONFIG=botsort.yaml` for
+> those pipelines.
+>
+> **`ARMYEYE_SKIP_DECODE=1` — on by default.** Capture CPU -38% to -54%, capture rate
+> unchanged, **inference rate -5%**. Set to `0` to revert.
+>
+> Full detail in [DEPLOYMENT.md](DEPLOYMENT.md) section 0.
+
+
 Every number here was measured on this host against **real RTSP cameras** (mediamtx +
 ffmpeg, H.264 1080p25 over TCP), not video files. File-based measurements overstate the
 benefit of decode work by roughly 2x and are not used for capacity claims.
@@ -78,7 +92,7 @@ refuses to start a pipeline assigned to a different node.
 
 | setting | effect |
 |---|---|
-| `gmc_method: none` (default, `botsort_fixed_camera.yaml`) | tracking **3.31x** faster. Stock BoT-SORT runs optical-flow motion compensation every frame for *moving* cameras; fixed CCTV does not need it. PTZ that pans while tracking: `ARMYEYE_TRACKER_CONFIG=botsort.yaml` |
+| `gmc_method: none` (default, `botsort_fixed_camera.yaml`) | tracking **3.31x** faster (8.42 ms -> 2.54 ms). Stock BoT-SORT runs optical-flow motion compensation every frame to cancel out *camera* movement; fixed CCTV does not move. **⚠ PTZ that pans WHILE tracking must set `ARMYEYE_TRACKER_CONFIG=botsort.yaml`** - without it the tracker loses objects across the movement, reassigns IDs, and person de-duplication (which keys on track ID) re-sends the same person after every pan |
 | `ARMYEYE_SKIP_DECODE=1` (default) | capture CPU **-38 % to -54 %**. Grabs every frame (stream stays drained, live edge preserved) but only converts to an array when something will read it. Live sources only — video files pace inside `read()`. Costs ~5 % of inference rate |
 | `ARMYEYE_TARGET_INFERENCE_FPS=5` | inference rate per camera. Achievable rates are quantised to `stream_fps / n`, so at 25 fps you get 5.00 or 4.17 — nothing between |
 | FP16 (`half=True`) | **rejected**: 12.35 ms vs 11.84 ms, *worse*. yolov8n on a 5090 is launch-overhead-bound, not compute-bound |

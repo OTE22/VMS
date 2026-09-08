@@ -7,9 +7,67 @@ it was verified on this machine at deployment time; anything not verified is mar
 explicitly as such.
 
 **Related documents**
+- [SCALING.md](SCALING.md) — measured capacity, and how to run more than one worker
 - [MOVING_TO_A_SEPARATE_SERVER.md](MOVING_TO_A_SEPARATE_SERVER.md) — the planned move off this host
 - [PRODUCTION_READINESS_REPORT.md](PRODUCTION_READINESS_REPORT.md) — the persistence architecture this deployment implements
 - [STEP0_GPU_BASELINE.md](STEP0_GPU_BASELINE.md) — performance baseline methodology
+
+---
+
+## 0. ⚠ READ FIRST — two defaults changed
+
+Two runtime defaults changed in the capacity work. Both are **correct for this deployment**
+and were measured here, but **one of them is wrong for PTZ cameras**. Read this before
+deploying to any other site.
+
+### 0.1 ⚠ Motion compensation is OFF — WRONG FOR PTZ CAMERAS
+
+`InferenceEngine/trackers/botsort_fixed_camera.yaml` is now the default tracker, and it
+sets `gmc_method: none`.
+
+Stock BoT-SORT runs Global Motion Compensation (optical flow) on **every tracked frame** to
+cancel out **camera** movement. Fixed CCTV does not move, so this was pure overhead — and
+it was 81% of the cost of an inference call. Removing it made tracking **3.31× faster**
+(8.42 ms → 2.54 ms) and moved the stable ceiling from 35 to 40 cameras per worker.
+
+| Camera type | Correct setting |
+|---|---|
+| **Fixed / static mount** (this deployment) | default — nothing to do |
+| **PTZ that pans or tilts WHILE tracking** | ⚠ `ARMYEYE_TRACKER_CONFIG=botsort.yaml` |
+
+**What goes wrong if you get this wrong:** a PTZ camera that moves during tracking will
+suffer **track-ID switches** — the tracker loses objects across the movement and reassigns
+new IDs. Person de-duplication keys on track ID, so the same person is re-sent as a new
+detection after every pan. Nothing errors; you simply get duplicate webhooks.
+
+A PTZ camera that only moves between presets, and is static while tracking, is fine on the
+default.
+
+### 0.2 Decode skipping is ON
+
+`ARMYEYE_SKIP_DECODE=1` is the default. Frames are always **grabbed** (the stream stays
+drained and the pipeline stays at the live edge), but only **decoded** into an array when
+something will actually read them — an inference is due, a viewer is watching, or the
+thumbnail has not been taken yet.
+
+Measured on a real RTSP camera:
+
+| | effect |
+|---|---|
+| Capture CPU | **−38%** (1 camera) to **−54%** (20 cameras) |
+| Capture frame rate | unchanged |
+| Inference rate | **−5%** (4.43 → 4.22 fps) — the honest cost |
+
+Set `ARMYEYE_SKIP_DECODE=0` to revert. Video-file sources are unaffected either way: they
+pace playback inside `read()` and deliberately stay on the original path.
+
+### 0.3 Also new, but inert until you use them
+
+- **`ARMYEYE_NODE_ID`** — now defaults to `vms-1` in compose. Gives this worker an identity
+  that survives a restart. **Required** before running a second worker; harmless otherwise.
+- **`pipelines.node_id`** (migration `0006`) — pins a pipeline to one worker. `NULL` means
+  unassigned and runnable anywhere, which is every existing pipeline, so behaviour is
+  unchanged until you assign something. See [SCALING.md](SCALING.md).
 
 ---
 
@@ -137,6 +195,15 @@ which refuses mismatched combinations (e.g. `APP_ENV=production` with `compose.d
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | seeds the first admin **only into an empty users table** |
 | `FLASK_SECRET_KEY` | session signing (32-byte hex). Changing it invalidates all sessions |
 | `ENABLE_ENGINE_BUILDER` | `false` — the builder writes server-side Python; keep off unless needed |
+
+**Performance and capacity** (see §0 — two of these changed the DEFAULT behaviour)
+
+| Variable | Default | Notes |
+|---|---|---|
+| `ARMYEYE_TARGET_INFERENCE_FPS` | `5` | inferences per second per camera. Frames are always read; only inference is gated. Achievable rates are quantised to `stream_fps / n`, so at 25 fps you get 5.00 or 4.17 — nothing between |
+| `ARMYEYE_TRACKER_CONFIG` | *(unset → `botsort_fixed_camera.yaml`)* | ⚠ **the default has `gmc_method: none`, which is WRONG FOR PTZ cameras that pan while tracking.** Set to `botsort.yaml` for those. See §0.1 |
+| `ARMYEYE_SKIP_DECODE` | `1` (on) | grab every frame, decode only when something reads it. Capture CPU −38% to −54%; **inference rate −5%**. `0` reverts. Live sources only |
+| `ARMYEYE_NODE_ID` | `vms-1` | stable worker identity. **Required** before running a second worker against this database, or pipeline→node assignment will not survive a restart |
 
 **FACE integration**
 
