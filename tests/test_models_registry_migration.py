@@ -169,3 +169,100 @@ def test_model_status_uses_only_registry_vocabulary(env):
         m = reg.get_model(st)
         if m:
             assert m["status"] in ("STAGING", "VALIDATING", "AVAILABLE", "FAILED", "MISSING", "CORRUPT", "DELETING")
+
+
+# --------------------------------------------------------------------- extension preservation
+# A legacy entry whose `stored_filename` had lost its extension migrated to a managed file
+# with NO suffix. Ultralytics dispatches on the file suffix, so the engine raised
+# "is not a supported model format" on every single frame; the engine catches that, so the
+# pipeline stayed green and healthy while publishing zero detections. Found in production:
+# model yolov8n_95a24496 stored as `.../yolov8n_95a24496` with representation format 'bin'.
+#
+# The helper above always wrote "<id>.pt", so no existing test could have caught it.
+def _legacy_model_no_ext(env, mid, name, data=b"weights", *, original=None, file_ext=None):
+    """A legacy entry whose stored_filename carries NO extension."""
+    p = env["models_dir"] / mid                      # on-disk legacy name, also extensionless
+    p.write_bytes(data)
+    entry = {"id": mid, "name": name, "stored_filename": mid,
+             "stored_path": str(p), "engine_type": "ultralytics", "description": "",
+             "file_size": str(len(data)), "upload_date": "2025-12-13T20:17:25"}
+    if original is not None:
+        entry["original_filename"] = original
+    if file_ext is not None:
+        entry["file_extension"] = file_ext
+    return entry
+
+
+def _primary(model_id):
+    m = reg.get_model(model_id)
+    for r in m.get("representations", []):
+        if r.get("kind") == "primary":
+            return r
+    raise AssertionError("no primary representation")
+
+
+def test_extensionless_legacy_entry_still_lands_on_a_loadable_suffix(env):
+    """The exact production case: stored_filename lost '.pt', original_filename still has it."""
+    e = _legacy_model_no_ext(env, "yolov8n_95a24496", "yolov8n", original="yolov8n.pt")
+    _write_json(env, [e])
+    migrate_models_registry(str(env["json"]), str(env["models_dir"]))
+
+    rep = _primary("yolov8n_95a24496")
+    rel = rep["artifacts"][0]["relative_path"]
+    assert rel.endswith(".pt"), f"migrated to {rel!r} - the engine loads by SUFFIX and will reject it"
+    assert rep["format"] == "pt", f"format={rep['format']!r}; 'bin' is what made this invisible"
+    assert rep["artifacts"][0]["status"] == S.AVAILABLE.value
+
+
+def test_the_bytes_are_still_verified_after_the_rename(env):
+    """Renaming the destination must not break the sha256/size contract."""
+    data = b"a real checkpoint" * 100
+    _write_json(env, [_legacy_model_no_ext(env, "m_1", "m", data=data, original="m.pt")])
+    migrate_models_registry(str(env["json"]), str(env["models_dir"]))
+
+    a = _primary("m_1")["artifacts"][0]
+    assert a["sha256"] == hashlib.sha256(data).hexdigest()
+    assert a["size_bytes"] == len(data)
+    assert os.path.isfile(ap.resolve("models", a["relative_path"]))
+
+
+def test_it_falls_back_to_the_recorded_file_extension(env):
+    """Some legacy rows have no usable filename at all, only `file_extension`."""
+    _write_json(env, [_legacy_model_no_ext(env, "m_2", "m", file_ext=".onnx")])
+    migrate_models_registry(str(env["json"]), str(env["models_dir"]))
+
+    rep = _primary("m_2")
+    assert rep["artifacts"][0]["relative_path"].endswith(".onnx")
+    assert rep["format"] == "onnx"
+
+
+def test_a_correct_legacy_entry_is_left_alone(env):
+    """No double-suffixing: '<id>.pt' must not become '<id>.pt.pt'."""
+    _write_json(env, [_legacy_model(env, "m_3", "m")])
+    migrate_models_registry(str(env["json"]), str(env["models_dir"]))
+
+    rel = _primary("m_3")["artifacts"][0]["relative_path"]
+    assert rel.endswith(".pt") and not rel.endswith(".pt.pt"), rel
+    assert _primary("m_3")["format"] == "pt"
+
+
+def test_an_entry_with_no_extension_anywhere_still_migrates(env):
+    """Unknown format must not crash the migration - it degrades to 'bin', which is
+    honest: we genuinely do not know what the bytes are."""
+    _write_json(env, [_legacy_model_no_ext(env, "m_4", "m")])
+    migrate_models_registry(str(env["json"]), str(env["models_dir"]))
+
+    rep = _primary("m_4")
+    assert rep["format"] == "bin"
+    assert rep["artifacts"][0]["status"] == S.AVAILABLE.value
+
+
+def test_uploads_were_never_affected(env):
+    """store_model derives the stored name as f'{model_id}{ext}' from the ORIGINAL filename,
+    so the upload path always preserved the suffix. Pinned so a 'consistency' refactor that
+    aligns upload with the old migration behaviour cannot reintroduce the bug."""
+    src = open(os.path.join(REPO, "InferenceNode", "model_repo.py"), encoding="utf-8").read()
+    i = src.index("def store_model")
+    body = src[i:i + 1500]
+    assert 'ext = os.path.splitext(original_filename)[1]' in body
+    assert 'stored_filename = f"{model_id}{ext}"' in body

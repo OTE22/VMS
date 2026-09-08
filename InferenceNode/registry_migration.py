@@ -84,9 +84,21 @@ def _migrate_one_model(model_id: str, entry: dict, legacy_dir: str, report: Migr
 
     # ---- primary artifact (.pt / .onnx / ...)
     src, why = resolve_legacy_path(entry.get("stored_path"), [legacy_dir], stored_filename)
-    ext = os.path.splitext(stored_filename or "")[1] or entry.get("file_extension") or ""
+    # The extension is NOT cosmetic. Ultralytics (and the ONNX/OpenVINO loaders) dispatch on
+    # the file SUFFIX, so a legacy entry whose stored_filename lost its extension migrates to
+    # a file the engine cannot load at all: it raises "not a supported model format" on every
+    # frame, the engine catches it, and the pipeline runs green while publishing NOTHING.
+    # Fall back through original_filename and the recorded file_extension, then make sure the
+    # destination name actually carries the suffix. `src` above is resolved from the LEGACY
+    # name and is deliberately left alone - only the managed destination is normalised.
+    ext = (os.path.splitext(stored_filename or "")[1]
+           or os.path.splitext(entry.get("original_filename") or "")[1]
+           or entry.get("file_extension") or "")
     fmt = (ext.lstrip(".") or "bin").lower()
-    rel = f"{safe_id}/{_safe_component(stored_filename or (safe_id + ext))}"
+    stored_name = stored_filename or (safe_id + ext)
+    if ext and not stored_name.lower().endswith(ext.lower()):
+        stored_name += ext
+    rel = f"{safe_id}/{_safe_component(stored_name)}"
     if src is None:
         status = S.MISSING
         model_registry.register_representation(model_id=model_id, format=fmt, kind="primary", required=True,
