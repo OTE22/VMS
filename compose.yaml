@@ -1,0 +1,106 @@
+# ArmyEye VMS - base compose. Exactly two services: the app (vms) and its OWN PostgreSQL.
+#
+# Overlays are layered via COMPOSE_FILE in .env (validated by docker-start.sh):
+#   production + gpu:  compose.yaml:compose.prod.yaml:compose.gpu.yaml
+#   production + cpu:  compose.yaml:compose.prod.yaml:compose.cpu.yaml
+#   development + *:   compose.yaml:compose.dev.yaml:compose.<cpu|gpu>.yaml
+#
+# Persistence contract (see DOCS/PRODUCTION_READINESS_REPORT.md):
+#   PostgreSQL (service db)          = authoritative metadata / registry / config
+#   ARTIFACT_ROOT (./InferenceNode/data) = managed model / engine / media / thumbnail BYTES
+# Both are bind-mounted or volume-backed - nothing stateful lives in the image.
+name: armyeye
+
+services:
+  vms:
+    build:
+      context: .
+      args:
+        COMPUTE: ${COMPUTE:-cpu}          # cpu | gpu  (the cpu/gpu overlay pins this)
+    image: armyeye-vms
+    container_name: VMS
+    networks:
+      - armyeye
+      # Shared with FACE_DETECTOR's nginx (aliases face-webhook / face-detector.internal).
+      # External: infrastructure owned by neither project; docker-start.sh provisions it.
+      - webhook_integration
+    environment:
+      - PYTHONUNBUFFERED=1
+      - NODE_NAME=${NODE_NAME:-VMS}
+      - NODE_PORT=${NODE_PORT:-5555}
+      - DISCOVERY_BIND_IP=0.0.0.0
+      - DISCOVERY_PORT=8888
+      # Flask session signing - stable value required in production.
+      - FLASK_SECRET_KEY=${FLASK_SECRET_KEY:?set FLASK_SECRET_KEY in .env}
+      # ArmyEye's OWN database (never FACE_DETECTOR's). Containers reach it at db:5432.
+      - ARMYEYE_DATABASE_URL=postgresql://armeye:${ARMEYE_DB_PASSWORD:?set ARMEYE_DB_PASSWORD in .env}@db:5432/armeye
+      # Initial admin - seeded ONLY when the users table is empty; must change password on first login.
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      # Admin-only custom-engine builder (writes server code) - off unless explicitly enabled.
+      - ENABLE_ENGINE_BUILDER=${ENABLE_ENGINE_BUILDER:-false}
+      # Detection webhooks -> FACE_DETECTOR. Fail-closed: auth required and no token => nothing is sent.
+      - WEBHOOK_BASE_URL=${WEBHOOK_BASE_URL:-}
+      - WEBHOOK_AUTH_TOKEN=${WEBHOOK_AUTH_TOKEN:-}
+      - WEBHOOK_AUTH_REQUIRED=${WEBHOOK_AUTH_REQUIRED:-true}
+      # Managed artifact plane (models / engines / media / thumbnails), registered in PostgreSQL.
+      - ARMYEYE_ARTIFACT_ROOT=/app/InferenceNode/data
+      # Config-encryption key arrives as a MOUNTED secret; the entrypoint stages a private
+      # 0400 copy in the tmpfs below and points the app at it (bind mounts cannot carry
+      # restrictive modes on every host). Never baked into the image, never in PostgreSQL.
+      - ARMYEYE_CONFIG_ENCRYPTION_KEY_SOURCE=/run/secrets/armyeye_config_key
+      # Private CA that signs FACE_DETECTOR's TLS cert. The entrypoint appends it to the
+      # public CA bundle so webhooks verify FACE *and* public downloads keep working.
+      - ARMYEYE_CA_SOURCE=/run/secrets/face_internal_ca
+    secrets:
+      - armyeye_config_key
+      - face_internal_ca
+    # Container-private, memory-backed area for staged secrets (never touches the host).
+    tmpfs:
+      - /run/armyeye:uid=1000,gid=1000,mode=0700
+    volumes:
+      # ARTIFACT_ROOT - the only place artifact bytes live; survives image rebuild/recreate.
+      - ./InferenceNode/data:/app/InferenceNode/data
+      # Legacy roots: one-time migration sources (read at first boot), retained for rollback.
+      - ./InferenceNode/model_repository:/app/InferenceNode/model_repository
+      - ./InferenceNode/media:/app/InferenceNode/media
+      - ./InferenceNode/pipelines:/app/InferenceNode/pipelines
+      - ./InferenceNode/logs:/app/InferenceNode/logs
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:16-alpine
+    container_name: VMS-db
+    networks:
+      - armyeye
+    environment:
+      - POSTGRES_DB=armeye
+      - POSTGRES_USER=armeye
+      - POSTGRES_PASSWORD=${ARMEYE_DB_PASSWORD:?set ARMEYE_DB_PASSWORD in .env}
+    volumes:
+      - armeye_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U armeye -d armeye"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+networks:
+  armyeye:
+    driver: bridge
+  webhook_integration:
+    external: true
+
+volumes:
+  armeye_pgdata:
+
+secrets:
+  # Generate: python3 -c 'import base64,os;print("armyeye-prod:"+base64.urlsafe_b64encode(os.urandom(32)).decode())' > secrets/armyeye_config_key && chmod 600 secrets/armyeye_config_key
+  armyeye_config_key:
+    file: ${ARMYEYE_CONFIG_KEY_FILE:-./secrets/armyeye_config_key}
+  # FACE_DETECTOR's internal CA certificate (public material, not a secret - a 'secret'
+  # mount is simply the cleanest way to hand a single read-only file to the container).
+  face_internal_ca:
+    file: ${FACE_INTERNAL_CA_FILE:-./secrets/face-internal-ca.crt}

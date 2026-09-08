@@ -1,0 +1,32 @@
+# ---- secrets and per-host configuration: NEVER committed -------------------------------
+.env
+.env.*
+!.env.example
+secrets/
+
+# ---- runtime data (bind mounts) - lives on the host, registered in PostgreSQL ----------
+InferenceNode/data/
+InferenceNode/model_repository/
+InferenceNode/media/
+InferenceNode/pipelines/
+InferenceNode/logs/
+InferenceNode/node_settings.json
+
+# ---- test / benchmark output ----------------------------------------------------------
+readiness-run/
+readiness-run.console.log
+.pytest_cache/
+storage/
+
+# ---- python / tooling ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.vscode/
+.idea/
+
+# NOTE: compose*.yaml are deployment configuration and MUST stay tracked.
+# A previous blanket '*.yaml' rule silently dropped them from the repo and left a fresh
+# clone with nothing to deploy. Do not reintroduce a wildcard yaml rule here.

@@ -1,0 +1,11 @@
+# CPU overlay. Select via .env:
+#   ACCELERATOR=cpu
+#   COMPOSE_FILE=compose.yaml:compose.<prod|dev>.yaml:compose.cpu.yaml
+#
+# Installs requirements-cpu.txt (CPU torch wheel index, plain onnxruntime).
+# Requests NO GPU devices.
+services:
+  vms:
+    build:
+      args:
+        COMPUTE: cpu

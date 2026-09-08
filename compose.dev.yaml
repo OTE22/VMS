@@ -1,0 +1,18 @@
+# Development overlay. Select via .env:
+#   APP_ENV=development
+#   COMPOSE_FILE=compose.yaml:compose.dev.yaml:compose.<cpu|gpu>.yaml
+services:
+  vms:
+    command: python main.py --port ${NODE_PORT:-5555} --production
+    restart: "no"
+    ports:
+      - "${NODE_PORT:-5555}:${NODE_PORT:-5555}"
+      - "8888:8888/udp"
+
+  db:
+    # Host access for dev tooling (psql/GUI). Host 5432 is commonly taken by another
+    # PostgreSQL (e.g. the FACE_DETECTOR stack), so ArmyEye's dev DB publishes 5433.
+    # Container-to-container traffic still uses db:5432 regardless of this mapping.
+    ports:
+      - "${ARMEYE_DB_PORT:-5433}:5432"
+    restart: "no"

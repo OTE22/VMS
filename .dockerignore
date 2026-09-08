@@ -101,3 +101,7 @@ docker-start.sh
 # Temporary files
 tmp/
 temp/
+.env
+.env.*
+!.env.example
+secrets/

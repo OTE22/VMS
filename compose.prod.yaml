@@ -1,0 +1,24 @@
+# Production overlay. Select via .env:
+#   COMPOSE_FILE=compose.yaml:compose.prod.yaml:compose.<cpu|gpu>.yaml
+services:
+  vms:
+    # Waitress WSGI server (production), never the Flask dev server.
+    command: python main.py --port ${NODE_PORT:-5555} --production
+    restart: unless-stopped
+    ports:
+      - "${NODE_PORT:-5555}:${NODE_PORT:-5555}"   # web UI + API
+      - "8888:8888/udp"                            # node discovery
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  db:
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # No published DB port in production; only VMS reaches it via db:5432.
