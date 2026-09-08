@@ -322,7 +322,15 @@ function updateGPUInfo(gpuInfo) {
             <strong>${gpu.name}</strong><br>
             <small class="text-muted">
                 Type: ${gpu.type}<br>
-                Memory: ${formatBytes(gpu.memory_total || 0)}<br>
+                Memory: ${gpu.memory_total ? formatBytes(gpu.memory_total) : 'Unknown'}${
+                    // Used/free is the number that decides how many pipelines fit, and it is
+                    // DEVICE-WIDE: a co-tenant on the same card is counted here on purpose.
+                    Number.isFinite(gpu.memory_used) && gpu.memory_total
+                      ? ` — ${formatBytes(gpu.memory_used)} used, ${formatBytes(gpu.memory_free)} free` : ''
+                }<br>
+                ${Number.isFinite(gpu.utilization_percent)
+                    ? `Utilization: ${gpu.utilization_percent}%${
+                        Number.isFinite(gpu.temperature_c) ? ` · ${gpu.temperature_c}°C` : ''}<br>` : ''}
                 Driver: ${gpu.driver_version || 'Unknown'}
             </small>
         </div>

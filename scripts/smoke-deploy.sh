@@ -19,7 +19,15 @@ done
 
 echo "=== 2. database migrated to head ==="
 REV=$(docker exec VMS-db psql -U armeye -d armeye -tAc "select version_num from alembic_version" 2>/dev/null)
-[ "$REV" = "0005_pipeline_model_integrity" ] && ok "alembic head: $REV" || no "alembic head: ${REV:-unreadable}"
+# Derive the expected head from the migration files rather than hardcoding it: pinning the
+# revision here meant every new migration failed this check for the wrong reason.
+HEAD=$(docker exec VMS sh -c 'cd /app && python -c "
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+print(ScriptDirectory.from_config(Config(\"alembic.ini\")).get_current_head())
+"' 2>/dev/null)
+[ -n "$HEAD" ] && [ "$REV" = "$HEAD" ] && ok "alembic at head: $REV" \
+  || no "alembic head: ${REV:-unreadable} (expected ${HEAD:-unknown})"
 T=$(docker exec VMS-db psql -U armeye -d armeye -tAc "select count(*) from information_schema.tables where table_schema='public'" 2>/dev/null)
 [ "${T:-0}" -ge 14 ] && ok "tables present: $T" || no "tables present: ${T:-0} (expected >=14)"
 
@@ -79,6 +87,17 @@ echo "=== 8. GPU visible to the running app ==="
 docker exec VMS python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" \
   && ok "torch.cuda.is_available() inside VMS" || no "CUDA not visible inside VMS"
 docker exec VMS nvidia-smi -L >/dev/null 2>&1 && ok "nvidia-smi inside VMS" || no "nvidia-smi inside VMS"
+# The node reporting its OWN VRAM is separate from CUDA working: a broken NVML import
+# left a 5090 host reporting "No GPU detection method available" while inference ran
+# fine, so torch.cuda alone does not cover it. This also catches
+# NVIDIA_DRIVER_CAPABILITIES losing 'utility', which hides NVML but not CUDA.
+docker exec VMS python -c "
+import sys; sys.path.insert(0,'/app')
+from InferenceNode import gpu_probe
+i = gpu_probe.probe()
+d = (i.get('devices') or [{}])[0]
+sys.exit(0 if i.get('available') and d.get('memory_total_bytes') and i.get('source')=='nvml' else 1)" 2>/dev/null \
+  && ok "NVML VRAM telemetry inside VMS" || no "NVML VRAM telemetry (GPU monitoring blind)"
 
 echo "=== 9. webhook egress to FACE (TLS + auth, no detection sent) ==="
 docker exec -i -e REQUESTS_CA_BUNDLE=/run/armyeye/ca-bundle.pem -e WEBHOOK_BASE_URL=https://face-detector.internal VMS python - <<'PY'

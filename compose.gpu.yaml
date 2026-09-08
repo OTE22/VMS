@@ -7,6 +7,12 @@
 # back to CPU silently. Verify inside the container:
 #   docker exec VMS nvidia-smi
 #   docker exec VMS python -c "import torch; assert torch.cuda.is_available(), 'CUDA not visible'; print(torch.cuda.get_device_name(0))"
+#
+# NVIDIA_DRIVER_CAPABILITIES must keep 'utility': that is what exposes NVML (and
+# nvidia-smi) inside the container. Reduce it to 'compute' alone and inference still
+# works, but VRAM/utilisation reporting silently degrades to the torch fallback, which
+# cannot read utilisation at all. Verify with:
+#   docker exec VMS python -c "import pynvml; pynvml.nvmlInit(); print('NVML ok')"
 services:
   vms:
     build:

@@ -120,91 +120,24 @@ class NodeTelemetry:
             }
     
     def _get_gpu_info(self) -> Dict[str, Any]:
-        """Get GPU information if available"""
-        gpu_info = {"available": False}
-        
-        # Try NVIDIA GPU first with the new library
+        """Real per-device VRAM and utilisation.
+
+        The NVML handling this used to do inline was broken in two ways (wrong module
+        name, and `.decode()` on a `str`) which silently degraded every GPU host to
+        "no GPU". It now lives in `gpu_probe`, which is the single implementation.
+        The generic lspci path is kept only for non-NVIDIA machines.
+        """
         try:
-            import nvidia_ml_py as nvml
-            nvml.nvmlInit()
-            device_count = nvml.nvmlDeviceGetCount()
-            
-            gpus = []
-            for i in range(device_count):
-                handle = nvml.nvmlDeviceGetHandleByIndex(i)
-                name = nvml.nvmlDeviceGetName(handle).decode('utf-8')
-                memory_info = nvml.nvmlDeviceGetMemoryInfo(handle)
-                
-                # Get additional info if available
-                try:
-                    utilization = nvml.nvmlDeviceGetUtilizationRates(handle)
-                    temperature = nvml.nvmlDeviceGetTemperature(handle, nvml.NVML_TEMPERATURE_GPU)
-                    power = nvml.nvmlDeviceGetPowerUsage(handle) / 1000.0  # Convert mW to W
-                except:
-                    utilization = None
-                    temperature = None
-                    power = None
-                
-                gpu_data = {
-                    "id": i,
-                    "name": name,
-                    "memory_total_gb": round(memory_info.total / (1024**3), 2),
-                    "memory_used_gb": round(memory_info.used / (1024**3), 2),
-                    "memory_free_gb": round(memory_info.free / (1024**3), 2),
-                    "vendor": "NVIDIA"
-                }
-                
-                # Add optional metrics if available
-                if utilization:
-                    gpu_data["gpu_utilization_percent"] = utilization.gpu
-                    gpu_data["memory_utilization_percent"] = utilization.memory
-                if temperature:
-                    gpu_data["temperature_c"] = temperature
-                if power:
-                    gpu_data["power_usage_w"] = round(power, 1)
-                
-                gpus.append(gpu_data)
-            
-            gpu_info = {"available": True, "devices": gpus, "driver_version": nvml.nvmlSystemGetDriverVersion().decode('utf-8')}
-            
-        except ImportError:
-            # Try fallback to deprecated pynvml if nvidia-ml-py not available
-            try:
-                import pynvml
-                pynvml.nvmlInit()
-                device_count = pynvml.nvmlDeviceGetCount()
-                
-                gpus = []
-                for i in range(device_count):
-                    handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-                    name = pynvml.nvmlDeviceGetName(handle).decode('utf-8')
-                    memory_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-                    
-                    gpus.append({
-                        "id": i,
-                        "name": name,
-                        "memory_total_gb": round(memory_info.total / (1024**3), 2),
-                        "memory_used_gb": round(memory_info.used / (1024**3), 2),
-                        "vendor": "NVIDIA"
-                    })
-                
-                gpu_info = {"available": True, "devices": gpus}
-                self.logger.warning("Using deprecated pynvml library. Consider installing nvidia-ml-py instead.")
-                
-            except ImportError:
-                # No NVIDIA libraries available, try generic GPU detection
-                gpu_info = self._get_generic_gpu_info()
-            except Exception as e:
-                self.logger.debug(f"Fallback GPU info collection failed: {str(e)}")
-                gpu_info = self._get_generic_gpu_info()
-                
-        except Exception as e:
-            self.logger.debug(f"NVIDIA GPU info collection failed: {str(e)}")
-            # Try generic GPU detection as fallback
-            gpu_info = self._get_generic_gpu_info()
-        
-        return gpu_info
-    
+            from . import gpu_probe
+        except ImportError:                      # flat sys.path layout
+            import gpu_probe
+
+        info = gpu_probe.probe()
+        if info.get("available"):
+            return info
+
+        return self._get_generic_gpu_info()
+
     def _get_generic_gpu_info(self) -> Dict[str, Any]:
         """Get generic GPU information without NVIDIA-specific libraries"""
         try:

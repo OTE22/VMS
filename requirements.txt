@@ -63,7 +63,10 @@ lap==0.5.12
 # geti-sdk>=2.11.0  # DISABLED: Requires Python 3.10-3.13, install separately if needed
 # To install geti-sdk: pip install "geti-sdk>=2.11.0" (only on Python 3.10-3.13)
 
-# GPU monitoring (optional) - uses newer nvidia-ml-py instead of deprecated pynvml
+# GPU monitoring (optional) - VRAM/utilisation reporting.
+# NOTE: this distribution installs its module as `pynvml`, NOT `nvidia_ml_py`.
+# Importing the distribution name is what silently disabled GPU telemetry before;
+# see InferenceNode/gpu_probe.py, which is the only place that should import it.
 nvidia-ml-py>=12.0.0
 
 # Serial communication (optional)

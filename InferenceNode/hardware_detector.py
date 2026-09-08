@@ -1024,17 +1024,58 @@ class HardwareDetector():
 
         return optimized_device
 
+    def _probe_nvidia_gpus(self) -> List[Dict[str, Any]]:
+        """Live NVML readings shaped for the hardware/UI contract (bytes, not GB).
+
+        Returns [] when no NVIDIA GPU is visible, so the caller can fall back rather
+        than showing zeroes as if they were measurements.
+        """
+        try:
+            try:
+                from . import gpu_probe
+            except ImportError:                  # flat sys.path layout
+                import gpu_probe
+            info = gpu_probe.probe()
+        except Exception as e:
+            logging.getLogger(__name__).debug(f"NVML probe failed: {e}")
+            return []
+
+        if not info.get("available"):
+            return []
+
+        driver = info.get("driver_version") or "Unknown"
+        out = []
+        for d in info.get("devices", []):
+            out.append({
+                'name': d.get('name', 'NVIDIA GPU'),
+                'memory_total': d.get('memory_total_bytes', 0),
+                'memory_used': d.get('memory_used_bytes', 0),
+                'memory_free': d.get('memory_free_bytes', 0),
+                'utilization_percent': d.get('gpu_utilization_percent'),
+                'temperature_c': d.get('temperature_c'),
+                'driver_version': driver,
+                'type': 'NVIDIA'
+            })
+        return out
+
     def get_gpu_details(self) -> List[Dict[str, Any]]:
         """Get detailed GPU information"""
         gpu_details = []
         try:
             hw_info = self.hardware_info
             
-            # NVIDIA GPUs
+            # NVIDIA GPUs.
+            # `memory_total` is BYTES here - the UI renders it with formatBytes().
+            # This used to be hardcoded to 0 with the name flattened to "NVIDIA GPU",
+            # so the node could not report the resource that actually caps how many
+            # cameras it runs. Live NVML is preferred; the detector's own nvidia-smi
+            # parse is the fallback, since it at least knows the real model name.
             nvidia_gpu = hw_info.get('nvidia', {}).get('gpu')
             if nvidia_gpu:
-                # Handle both boolean and list formats
-                if isinstance(nvidia_gpu, list):
+                probed = self._probe_nvidia_gpus()
+                if probed:
+                    gpu_details.extend(probed)
+                elif isinstance(nvidia_gpu, list):
                     for gpu in nvidia_gpu:
                         gpu_details.append({
                             'name': gpu.get('name', 'NVIDIA GPU'),
@@ -1042,15 +1083,28 @@ class HardwareDetector():
                             'driver_version': gpu.get('driver_version', 'Unknown'),
                             'type': 'NVIDIA'
                         })
-                elif nvidia_gpu is True:
-                    # Just a boolean flag, add generic GPU info
-                    gpu_details.append({
-                        'name': 'NVIDIA GPU',
-                        'memory_total': 0,
-                        'driver_version': 'Unknown',
-                        'type': 'NVIDIA'
-                    })
-            
+                else:
+                    # Boolean flag: NVML gave us nothing, but the nvidia-smi -L parse
+                    # already recorded per-device names - use them rather than a
+                    # placeholder, and leave memory unknown rather than inventing it.
+                    detected = (hw_info.get('nvidia', {}).get('gpu_details') or {})
+                    if detected:
+                        for key in sorted(detected, key=lambda k: str(k)):
+                            dev = detected[key] or {}
+                            gpu_details.append({
+                                'name': dev.get('name', 'NVIDIA GPU'),
+                                'memory_total': 0,
+                                'driver_version': 'Unknown',
+                                'type': 'NVIDIA'
+                            })
+                    else:
+                        gpu_details.append({
+                            'name': 'NVIDIA GPU',
+                            'memory_total': 0,
+                            'driver_version': 'Unknown',
+                            'type': 'NVIDIA'
+                        })
+
             # Intel GPUs
             intel_gpu = hw_info.get('intel', {}).get('gpu')
             if intel_gpu:
