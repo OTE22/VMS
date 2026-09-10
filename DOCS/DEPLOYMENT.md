@@ -423,10 +423,32 @@ commented out), so asking for `cpu` ran OpenVINO and, on a machine whose NVIDIA 
 failed, asking for `GPU` ran Intel OpenVINO instead of CUDA. **A CUDA request that cannot be
 satisfied now raises** rather than silently running ~20× slower on CPU.
 
-### Not yet done
+### Multi-camera GPU baseline — done
 
-Phase E — download `yolov8n`, create a pipeline on `cuda:0`, and run the Step 0 benchmark
-harness for a real multi-camera GPU baseline. Requires the admin password change first.
+Completed 2026-09-08/10. `yolov8n` on `cuda:0`, measured against **real RTSP cameras**
+(mediamtx + ffmpeg, H.264 1080p25 over TCP). Video-file measurements were deliberately
+discarded for capacity claims — they overstate decode savings by roughly 2×.
+
+| | |
+|---|---|
+| Stable per worker | **40 cameras** (25 fps capture + 5 fps inference, 1080p) |
+| 60 cameras | **5.00 fps on all 60**, 3 workers × 20, 9.99/20 cores, 50 % GPU |
+| Single-process ceiling | ~220–250 inferences/s |
+| ArmyEye VRAM at 60 cameras | 3.4 GB (the card also carries FACE's ~15.7 GB of pinned ollama models) |
+
+**The limit is the GIL, not this hardware.** At the collapse point GPU is ~25 % and CPU ~5
+of 20 cores — nothing is saturated. Past the ceiling, adding cameras makes throughput
+*worse*, not flat.
+
+Method, full curves and the tuning that was measured — including FP16, which was measured
+and **rejected** — are in **[SCALING.md](SCALING.md)**.
+
+### Still not done
+
+**NVDEC is idle.** The 5090's dedicated video decoders sit at **0 %** while decode runs on
+the CPU — the resource that actually limits camera count. Reaching them needs a decode
+dependency this image does not have (`av` / DALI); the bundled OpenCV has no CUDA support
+(`cv2.cuda` reports 0 devices).
 
 ---
 
@@ -475,38 +497,138 @@ Log locations: `docker compose logs vms`, and `InferenceNode/logs/infernode.log`
 
 ## 11. Known limitations
 
-Carried from the capability audit; these are properties of the current build, not defects
-introduced by the deployment.
+Status as of 2026-09-10. Items marked **FIXED** were closed during Steps 1–10; the rest
+are still true and are properties of the current build, not defects introduced by the
+deployment.
 
-1. **WiFi** — the binding constraint on camera capacity (§1). Wire before scale testing.
-2. **Single-process runtime** — thread-per-pipeline in one Python process. Realistic capacity
-   is ~5 cameras at full frame rate today, GIL-bound rather than GPU-bound. The
-   optimisation sequence (Steps 2–8) addresses this and is unstarted.
-3. **No frame skipping** — every frame read is inferred; there is no target-FPS gate yet.
-4. **Hardcoded class allow-list** — 73 of 80 COCO classes are discarded before publishing,
-   including `backpack`/`handbag`/`suitcase` and `license_plate`.
-5. **No detection persistence in ArmyEye** — detections are fire-and-forget to publishers.
-6. **RTSP has no reconnect** — a disconnect ends the pipeline permanently (Step 5).
-7. **`audit_log` has no read path** — write-only; query with `psql`.
-8. **6-thread Waitress pool shared with MJPEG previews** — roughly six concurrent viewers can
-   starve the API.
+| # | Limitation | Status |
+|---|---|---|
+| 1 | **WiFi** on this host | **STILL TRUE** — and untested at scale. The capacity numbers came from RTSP sources on the local bridge network, so real cameras over WiFi may bind earlier than the GIL does. Wire before trusting 40/worker in the field. |
+| 2 | Single-process runtime, thread-per-pipeline | **PARTLY FIXED.** The old "~5 cameras" estimate was wrong — measured **40 per worker**, and `pipelines.node_id` now lets several workers share one database (60 cameras at 5.00 fps across 3). Still GIL-bound at ~220–250 inferences/s per process, and assignment is **manual**: no auto-balancing, no failover. |
+| 3 | No frame skipping — every frame inferred | **FIXED** (Step 3). `ARMYEYE_TARGET_INFERENCE_FPS`, default 5. Frames are still always read so the decoder stays drained. |
+| 4 | Hardcoded class allow-list — 73 of 80 COCO classes discarded before publishing, including `backpack`/`handbag`/`suitcase` | **STILL TRUE.** Blocks person-to-bag association without a change here. |
+| 5 | No detection persistence in ArmyEye — fire-and-forget to publishers | **STILL TRUE.** No backward tracing or replay; FACE is the only durable record. |
+| 6 | RTSP disconnect ends the pipeline permanently | **FIXED** (Step 5). Bounded exponential backoff 1 s → 30 s, unbounded attempts, and the backoff resets only on a real frame — cv2 reports a dead RTSP handle as "opened". Verified live by killing a publisher mid-run and restoring it. |
+| 7 | `audit_log` is write-only — no read path | **STILL TRUE.** Query with `psql`. Writes now cover pipeline lifecycle, media ingest/delete and node assignment. |
+| 8 | 6-thread Waitress pool shared with MJPEG previews | **STILL TRUE** (`threads=6`). Roughly six concurrent viewers can starve the API. |
+| 9 | NVDEC unused | **STILL TRUE.** The 5090's video decoders sit at 0 % while decode consumes the CPU that caps camera count. Needs a decode dependency the image lacks. |
+| 10 | GitHub `main` is an unrelated history | **OPEN.** See §12.4 — the remote does not reflect what is running here. |
 
 ---
 
-## 12. Deployment record
+## 12. Deployment record — Phase 1 to final stage
+
+Two distinct bodies of work, in order. **Phases 1–18** rebuilt persistence so the system
+could be trusted with state; **Steps 1–10** then made it fast enough to be worth scaling.
+Every figure below was verified on this host, not estimated.
+
+### 12.1 Phases 1–18 — persistence architecture
+
+Goal: PostgreSQL authoritative for metadata, `ARTIFACT_ROOT` for bytes, joined by
+`id + relative_path + sha256 + size + status`. Before this, state lived in JSON files beside
+the code and a container rebuild could silently lose it.
+
+| Phase | Delivered | Commit |
+|---|---|---|
+| — | Baseline tree before the work | `e59bc9e` |
+| 1 | Audit and architecture decision (no code) | — |
+| 2–3 | Pipeline Builder/Management remediation; authorization + CSRF hardening | `5232267` |
+| 4 | Alembic `0004` — artifact registry foundation | `327a7f8` |
+| 5 | Physical artifact migration framework + single path resolver | `3b03b5f` |
+| 6 | Legacy models registry → PostgreSQL + ARTIFACT_ROOT | `47fd793` |
+| 8 | Alembic `0005` — pipeline→model relational integrity (FK + CHECK) | `3ff0383` |
+| 9 | ModelRegistry cutover; `models_metadata.json` retired as a runtime source | `f37a18b` |
+| 10 | Publishers / node / telemetry config → PostgreSQL + versioned encryption | `fe8346f` |
+| 11 | Engine registry + protected persistent artifact root | `68138be` |
+| 12 | Media + thumbnail registry (rows in PostgreSQL, bytes in ARTIFACT_ROOT) | `caed9c6` |
+| 13 | Unified registry reconciliation verifier + startup verification | `9581fda` |
+| 14 | Dashboard cutover — registry-authoritative counts, runtime vs persisted labelled | `86e3fff` |
+| 15 | Browser E2E (real server, isolated PostgreSQL + ARTIFACT_ROOT) + 3 defects it exposed | `e8a4ae8` |
+| 16 | Container recreation verified live (`--force-recreate`, not restart) | `1bd7238` |
+| 16/17 | Throwaway-PostgreSQL fixture, live recreation proof, readiness runner | `cc84649` |
+| 18 | Final production-readiness report — verdict **PASS** | `0e7eb16` |
+
+There is no Phase 7; it was folded into 6 and 8. Phase 1 produced the architecture
+decision, not code. Bootstrap ordering (`0004` → legacy model migration → `0005`) is
+enforced at startup — `0005` must not run before model rows exist. See `45d5d63`.
+
+Full detail: [PRODUCTION_READINESS_REPORT.md](PRODUCTION_READINESS_REPORT.md).
+
+### 12.2 Deployment to the GPU host (2026-09-08)
 
 | | |
 |---|---|
-| Image build | 59 min, 3.2 GB pulled over WiFi, exit 0 |
-| First boot | healthy in 3 s; clean install, 14 tables, alembic `0005` |
-| Smoke | **22 passed, 0 failed** |
+| Image build | 59 min, 3.2 GB pulled, exit 0 |
+| First boot | healthy in 3 s; 14 tables; alembic `0005` |
 | GPU proof | **PASS** — including `sm_120` and a real fp16 matmul |
 | FACE integration | **PASS** — resolve → tcp/443 → TLS SAN match → 401 |
-| Registry reconciliation | **healthy**, no problems, no warnings |
+| Registry reconciliation | **healthy** |
 
-Commits: `604809a` (recovered config + deployment), `f216a2d` (separate-server preparation).
+Commits `604809a` (recovered deployment configuration), `f216a2d` (separate-server
+preparation), `724fdb3` (this manual).
 
-Change made to FACE_DETECTOR: **one line** — its nginx now also answers to
-`face-detector.internal` on `webhook_integration`, the name its certificate actually carries.
-No certificate was rotated; no FACE service was restarted. Backup:
+Recovering the configuration was itself a finding: the `compose*.yaml` files had been lost
+to a wildcard `*.yaml` ignore rule and were never in git. `.gitignore` now protects secrets
+without a yaml wildcard, and carries a note saying why.
+
+**One change was made to FACE_DETECTOR** — a single line. Its nginx now also answers to
+`face-detector.internal` on `webhook_integration`, the name its certificate already
+carried. No certificate rotated, no FACE service restarted. Backup:
 `docker-compose.prod.yml.bak-20260908-102202`.
+
+### 12.3 Steps 1–10 — capacity
+
+Ordered by measurement, not by guesswork. Each step was one isolated change, verified with
+tests and a real before/after measurement before the next began. **Two were measured and
+rejected**, which is as much a result as the ones that shipped.
+
+| Step | Change | Measured effect |
+|---|---|---|
+| 1 | CUDA device selection — explicit devices honoured verbatim, no silent CPU fallback | correctness |
+| 3 | Configurable target inference FPS (`ARMYEYE_TARGET_INFERENCE_FPS`, default 5) | decoupled AI rate from capture rate |
+| 5 | RTSP reconnect with bounded backoff; dead sources stop spinning a core | a camera drop no longer ends the pipeline |
+| 6 | Skip the gated-frame copy when nothing reads it | −11.4 % CPU/camera; also stopped gated frames overwriting the annotated image |
+| 7 | Real GPU/VRAM telemetry (`gpu_probe`) | "no GPU" → 31.84 GB / util / driver; probe costs 0.010 ms |
+| 4 | FP16 + `imgsz` + `classes=` | **REJECTED** — FP16 is 12.35 ms vs 11.84 ms, *slower* |
+| — | BoT-SORT motion compensation off for fixed cameras | tracking **3.31×** faster; 35 → **40** cameras/worker |
+| 8 | Skip decode of frames nothing will read (grab → decide → retrieve) | capture CPU **−38 % to −54 %** |
+| 9 | Drift-free inference scheduling | **4.17 → 5.00 fps** (83 % → 100 % of target) |
+| 10 | `pipelines.node_id` — pin a pipeline to one worker | 60 cameras at 5.00 fps across 3 workers |
+| 2 | Per-frame debug print + CUDA sync | **DEFERRED** — measured smaller than assumed once Step 3 landed |
+
+Three defects were found along the way that had nothing to do with performance:
+
+- **The registered model could not be loaded at all.** No `.pt` suffix, so Ultralytics
+  rejected it every frame while the engine swallowed the exception. The pipeline ran green
+  and published **zero detections**. Fixed in the migration and repaired live
+  (`722067e`, `scripts/repair_model_extension.py`).
+- **Two workers could start the same camera**, doubling cost and duplicating every webhook,
+  with nothing in the schema or UI able to show it (`a04dcda`).
+- **Gated frames overwrote the annotated image** used by result-image destinations, so
+  webhooks usually received un-annotated frames (`a993744`).
+
+Capacity findings and method: [SCALING.md](SCALING.md).
+
+### 12.4 Final state — verified 2026-09-10
+
+| | |
+|---|---|
+| Commit | `d268437` |
+| Image | rebuilt from that commit; every application file verified byte-identical |
+| Container | `running / healthy` |
+| Alembic | `0006_pipeline_node_assignment`, 14 tables |
+| Test suite | **882 passed**, 32 skipped |
+| Smoke | **19 passed, 0 failed** |
+| Registry reconciliation | **healthy** |
+| Measured capacity | **40 cameras/worker**; 60 cameras at 5.00 fps across 3 workers |
+| GPU | RTX 5090, ~50 % at 60 cameras — the ceiling is the GIL, not the hardware |
+
+**Pushed to** `github.com/OTE22/VMS`, branch `perf/capacity-and-multi-worker`.
+
+⚠ **`main` on GitHub is a different, unrelated history** (root `e59bc9e`, 20 commits) from
+this machine's lineage (root `3d15eca`, 18 commits) — this working copy was `git init`-ed
+rather than cloned. The local tree is a strict **content** superset: nothing exists on the
+remote that is missing here, but the remote holds Phase 1–18 commit history that exists
+nowhere else. Reconciling the two (force `main`, or merge with
+`--allow-unrelated-histories`) is an open decision. Until it is made, **GitHub's `main`
+does not reflect what is running in production.**
