@@ -3155,31 +3155,13 @@ class InferenceNode:
                                 continue
                             
                             # Get the latest processed frame
-                            frame = pipeline_instance.get_latest_frame()
-                            
-                            if frame is not None:
-                                # Resize frame for preview (smaller = faster transmission)
-                                height, width = frame.shape[:2]
-                                if width > 640:  # Resize to max 640px width for preview
-                                    scale = 640 / width
-                                    new_width = 640
-                                    new_height = int(height * scale)
-                                    frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
-                                
-                                # Encode frame as JPEG with lower quality for faster streaming
-                                ret, buffer = cv2.imencode('.jpg', frame, [
-                                    cv2.IMWRITE_JPEG_QUALITY, 70,  # Lower quality for speed
-                                    cv2.IMWRITE_JPEG_OPTIMIZE, 1   # Optimize compression
-                                ])
-                                if ret:
-                                    frame_bytes = buffer.tobytes()
-                                    yield (b'--frame\r\n'
-                                           b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-                                    frame_count += 1
-                                    retry_count = 0  # Reset retry count on successful frame
-                                    last_frame_time = current_time
-                                else:
-                                    self.logger.warning(f"Failed to encode frame for pipeline {pipeline_id}")
+                            frame_bytes = pipeline_instance.get_preview_jpeg(640, 70)
+                            if frame_bytes is not None:
+                                yield (b'--frame\r\n'
+                                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+                                frame_count += 1
+                                retry_count = 0  # Reset retry count on successful frame
+                                last_frame_time = current_time
                             else:
                                 # No frame available yet, increment retry count
                                 retry_count += 1
@@ -3290,29 +3272,13 @@ class InferenceNode:
                                 continue
                             
                             # Get the latest processed frame
-                            frame = pipeline_instance.get_latest_frame()
-                            
-                            if frame is not None:
-                                # Keep original resolution for HQ stream, but limit to reasonable size
-                                height, width = frame.shape[:2]
-                                if width > 1280:  # Limit to 1280px width for HQ
-                                    scale = 1280 / width
-                                    new_width = 1280
-                                    new_height = int(height * scale)
-                                    frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
-                                
-                                # Higher quality encoding for HQ stream
-                                ret, buffer = cv2.imencode('.jpg', frame, [
-                                    cv2.IMWRITE_JPEG_QUALITY, 85,  # Higher quality
-                                    cv2.IMWRITE_JPEG_OPTIMIZE, 1
-                                ])
-                                if ret:
-                                    frame_bytes = buffer.tobytes()
-                                    yield (b'--frame\r\n'
-                                           b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-                                    frame_count += 1
-                                    retry_count = 0
-                                    last_frame_time = current_time
+                            frame_bytes = pipeline_instance.get_preview_jpeg(1280, 85)
+                            if frame_bytes is not None:
+                                yield (b'--frame\r\n'
+                                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+                                frame_count += 1
+                                retry_count = 0
+                                last_frame_time = current_time
                             else:
                                 retry_count += 1
                                 time.sleep(0.005)

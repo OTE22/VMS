@@ -1,4 +1,5 @@
 import os
+import ast
 import numpy as np
 import logging
 from typing import Any, Dict, Optional, Tuple
@@ -71,6 +72,13 @@ class OnnxEngine(BaseInferenceEngine):
         try:
             self.session = ort.InferenceSession(model_file, providers=providers, provider_options=provider_options)
 
+            metadata = self.session.get_modelmeta().custom_metadata_map
+            if not self.cat_map and metadata.get('names'):
+                names = ast.literal_eval(metadata['names'])
+                self.cat_map = dict(enumerate(names)) if isinstance(names, list) else {int(k): v for k, v in names.items()}
+
+            if not self.cat_map:
+                raise ValueError("ONNX class names are required in model metadata or cat_map")
             # Inspect inputs/outputs
             inputs = self.session.get_inputs()
             outputs = self.session.get_outputs()
@@ -126,7 +134,7 @@ class OnnxEngine(BaseInferenceEngine):
         if not isinstance(image, np.ndarray):
             raise TypeError("Input image must be a numpy array")
 
-        img = image.copy()
+        img = image
         # Record original image size (height, width)
         if img.ndim >= 2:
             self._original_image_size = (int(img.shape[0]), int(img.shape[1]))
@@ -184,7 +192,7 @@ class OnnxEngine(BaseInferenceEngine):
             raise RuntimeError("Model not loaded")
 
         # Prepare feed dict
-        feed = {self.input_name: preprocessed_input.astype(np.float32)}
+        feed = {self.input_name: np.ascontiguousarray(preprocessed_input, dtype=np.float32)}
         outputs = self.session.run([self.output_name], feed)
 
         # Expect outputs[0] to be numpy array
@@ -285,20 +293,33 @@ class OnnxEngine(BaseInferenceEngine):
                     # Skip low-confidence detection
                     continue
 
-                if self.cat_map:
-                    # Map to external category name if provided
-                    top_idx = self.cat_map.get(top_idx, "Other")
+                class_id = top_idx
+                class_name = self.cat_map.get(top_idx, str(top_idx)) if self.cat_map else str(top_idx)
 
                 det = {
-                    "bbox": bbox,
-                    "bbox_format": "xywh_center",
+                    "bbox": [x_c - bw / 2, y_c - bh / 2, x_c + bw / 2, y_c + bh / 2],
+                    "bbox_format": "xyxy",
                     "class_confidences": class_confidences,
-                    "top_class": top_idx,
+                    "class_id": class_id,
+                    "class_name": class_name,
+                    "confidence": top_score,
+                    "top_class": class_name,
                     "top_score": top_score,
                     "detection_index": i
                 }
                 result["predictions"].append(det)
 
+            # Raw YOLO outputs need class-wise non-maximum suppression.
+            import cv2
+            kept = []
+            for class_id in {d['class_id'] for d in result['predictions']}:
+                group = [d for d in result['predictions'] if d['class_id'] == class_id]
+                boxes = [[d['bbox'][0], d['bbox'][1], d['bbox'][2] - d['bbox'][0],
+                          d['bbox'][3] - d['bbox'][1]] for d in group]
+                indices = cv2.dnn.NMSBoxes(boxes, [d['confidence'] for d in group],
+                                           self.confidence_threshold, .5)
+                kept.extend(group[int(i)] for i in np.asarray(indices).reshape(-1))
+            result['predictions'] = kept
             result["num_detections"] = len(result["predictions"])
             # Echo back the confidence threshold used
             result["confidence_threshold"] = float(self.confidence_threshold)
@@ -319,19 +340,7 @@ class OnnxEngine(BaseInferenceEngine):
         h, w = out_img.shape[:2]
 
         for pred in results.get('predictions', []):
-            x_c, y_c, bw, bh = pred.get('bbox', [0, 0, 0, 0])
-
-            # If bbox seems normalized (<=1), scale to image size
-            if 0 < x_c <= 1 and 0 < y_c <= 1 and 0 < bw <= 1 and 0 < bh <= 1:
-                x_c *= w
-                y_c *= h
-                bw *= w
-                bh *= h
-
-            x1 = int(x_c - bw / 2)
-            y1 = int(y_c - bh / 2)
-            x2 = int(x_c + bw / 2)
-            y2 = int(y_c + bh / 2)
+            x1, y1, x2, y2 = (int(v) for v in pred['bbox'])
 
             cv2.rectangle(out_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
             label = f"{pred.get('top_class', -1)}:{pred.get('top_score', 0):.2f}"

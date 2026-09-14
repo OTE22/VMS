@@ -105,3 +105,6 @@ temp/
 .env.*
 !.env.example
 secrets/
+
+# Managed runtime data, including the durable event outbox
+InferenceNode/data/

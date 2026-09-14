@@ -101,7 +101,7 @@ def test_an_empty_env_var_falls_back_to_the_default(monkeypatch):
 
 def test_the_engine_no_longer_hardcodes_stock_botsort():
     assert 'self.tracker = "botsort.yaml" if self.tracking_enabled else None' not in ENGINE_SRC
-    assert "self.tracker = self._resolve_tracker() if self.tracking_enabled else None" in ENGINE_SRC
+    assert "self._resolve_tracker() if self.tracking_enabled else None" in ENGINE_SRC
 
 
 def test_tracking_can_still_be_disabled_entirely():

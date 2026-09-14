@@ -239,7 +239,7 @@ def test_grabbed_frames_still_count_as_captured():
     """They really were pulled off the camera, so capture FPS and the reconnect backoff
     must treat them as genuine frames."""
     i = SRC.index("success, frame, _decode = self._grab_then_maybe_retrieve()")
-    after = SRC[i:i + 2600]
+    after = SRC[i:SRC.index('# Record timestamp for FPS calculation', i)]
     assert "self._frame_counter += 1" in after
     assert "self._reconnect_attempts = 0" in after
 

@@ -151,10 +151,10 @@ def test_the_run_loop_guards_the_gated_branch():
     assert "self._latest_frame = frame.copy()" in body, "the copy itself must remain"
 
 
-def test_the_inference_branches_are_untouched():
+def test_viewer_frames_are_still_annotated():
     """One bottleneck at a time: the drawing branch and the no-image branch fire at the
     gated inference rate and are deliberately NOT changed here."""
-    i = SRC.index("if self.result_publisher.do_any_destinations_need_result_image() or self._is_streaming:")
+    i = SRC.index("if self._is_streaming:", SRC.index("# Handle frame storage for streaming"))
     body = SRC[i:i + 700]
     assert "output = self.inference_engine.draw(frame, results)" in body
     assert "self._latest_frame = output.copy()" in body, "drawing branch must be unchanged"
@@ -172,8 +172,9 @@ def test_gated_frames_no_longer_clobber_the_annotated_image():
         "the annotated frame must survive until the next inference frame replaces it"
 
 
-def test_deliver_job_still_reads_latest_frame_for_result_images():
-    """Guard the consumer this change reasons about, so the reasoning stays valid."""
-    i = SRC.index("def _deliver_job")
-    body = SRC[i:i + 900]
-    assert "result_img = self._latest_frame if need_result_image else None" in body
+def test_event_delivery_does_not_read_unrelated_preview_frame():
+    """Pixel correctness is exercised in test_event_delivery_regressions."""
+    start = SRC.index('def _prepare_job')
+    end = SRC.index('def _persist_job', start)
+    assert '_latest_frame' not in SRC[start:end]
+    assert 'annotated = frame.copy()' in SRC[start:end]

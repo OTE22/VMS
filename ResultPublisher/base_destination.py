@@ -1,5 +1,6 @@
 import json
 import time
+import math
 import logging
 import socket
 import threading
@@ -385,6 +386,8 @@ class BaseResultDestination(ABC):
 
     def set_rate_limit(self, rate_limit: Optional[float]) -> None:
         """Set rate limit as minimum seconds between publishes (0 or None for unlimited)"""
+        if rate_limit is not None and (not math.isfinite(float(rate_limit)) or float(rate_limit) < 0):
+            raise ValueError("Rate limit must be finite and nonnegative")
         self.rate_limit = rate_limit
     
     def can_publish(self) -> bool:
@@ -452,7 +455,8 @@ class BaseResultDestination(ABC):
                 rate_limit = float(self.rate_limit)
                 last_publish_time = float(self.last_publish_time) if self.last_publish_time is not None else 0
                 if (current_time - last_publish_time) < rate_limit:
-                    return {"status": "rate_limited", "error": None, "outcome": None, "retry_after": None}
+                    return {"status": "rate_limited", "error": None, "outcome": None,
+                            "retry_after": rate_limit - (current_time - last_publish_time)}
 
             # Reserve the slot before sending to avoid a concurrent double-send
             self.last_publish_time = time.time()

@@ -54,6 +54,14 @@ class NodeTelemetry:
         except Exception as e:
             self.logger.error(f"MQTT telemetry configuration failed: {str(e)}")
     
+    def _system_info(self):
+        if not hasattr(self, '_static_system_info'):
+            self._static_system_info = {
+                'platform': self._parse_windows_platform(platform.platform()),
+                'platform_raw': platform.platform(), 'processor': platform.processor(),
+                'architecture': platform.architecture()[0]}
+        return dict(self._static_system_info)
+
     def get_system_info(self) -> Dict[str, Any]:
         """Collect system information"""
         try:
@@ -82,12 +90,7 @@ class NodeTelemetry:
             return {
                 "node_id": self.node_id,
                 "timestamp": datetime.utcnow().isoformat(),
-                "system": {
-                    "platform": self._parse_windows_platform(platform.platform()),
-                    "platform_raw": platform.platform(),
-                    "processor": platform.processor(),
-                    "architecture": platform.architecture()[0]
-                },
+                "system": self._system_info(),
                 "cpu": {
                     "count": cpu_count,
                     "frequency_mhz": cpu_freq.current if cpu_freq else None,

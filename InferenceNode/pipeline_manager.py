@@ -689,6 +689,9 @@ class PipelineManager:
                 pipeline_instance = self.active_pipelines[pipeline_id]['pipeline_instance']
                 if hasattr(pipeline_instance, 'stop'):
                     pipeline_instance.stop()
+                    if pipeline_instance.is_running():
+                        self.runtime_errors[pipeline_id] = "Pipeline is still stopping"
+                        return False
 
             if pipeline_id in self.active_pipelines:
                 del self.active_pipelines[pipeline_id]
@@ -911,6 +914,7 @@ class PipelineManager:
         # Create pipeline instance
         pipeline = InferencePipeline()
         pipeline.id = pipeline_id
+        pipeline.node_id = self.node_id or pipeline.node_id
         pipeline.pipeline_name = config.get('name', '')
         
         # Configure frame source
@@ -943,8 +947,8 @@ class PipelineManager:
             # container stdout, and these diagnostics are the only way to tell a
             # fallback apart from a config that was silently rewritten.
             line = (f"pipeline_id={pipeline_id} "
-                    f"configured_source={resolution['configured_source']!r} "
-                    f"effective_source={resolution['effective_source']!r} "
+                    f"configured_source=<configured> "
+                    f"effective_source=<configured> "
                     f"source_fallback={str(resolution['source_fallback']).lower()} "
                     f"fallback_reason={resolution['fallback_reason'] or 'none'}")
             print(f"[SOURCE] {line}")
@@ -971,7 +975,7 @@ class PipelineManager:
                     except Exception as e:
                         print(f"Pipeline {pipeline_id}: Warning - could not create folder {source_folder}: {e}")
         
-        print(f"Pipeline {pipeline_id}: Final frame source config: {final_frame_config}")
+        self.logger.debug("Pipeline %s source type=%s", pipeline_id, mapped_capture_type)
         
         # Configure inference engine
         model_config = config['model']
@@ -1033,6 +1037,18 @@ class PipelineManager:
             inference_config = {'engine_type': engine, 'device': device}
         else:
             inference_config = {'engine_type': engine, 'model_path': model_path, 'device': device, 'task': 'detect'}
+
+        # Explicit per-pipeline tracking options, preserving the current default tracker.
+        if engine in ('ultralytics', 'torch'):
+            tracking = model_config.get('tracking', True)
+            inference_config['tracking'] = tracking
+            if model_config.get('tracker'):
+                inference_config['tracker'] = model_config['tracker']
+            inference_config['tracker_buffer_seconds'] = model_config.get('tracker_buffer_seconds', 6.0)
+            target = config.get('detection_config', {}).get('target_inference_fps')
+            inference_config['tracking_fps'] = target if target is not None else InferencePipeline._env_target_fps() or 5.0
+        if engine == 'onnx' and model_config.get('cat_map'):
+            inference_config['cat_map'] = {int(k): v for k, v in model_config['cat_map'].items()}
 
         # Configure result publisher with destinations
         pipeline_publisher = ResultPublisher()
@@ -1259,31 +1275,17 @@ class PipelineManager:
             
             print(f"Starting pipeline {pipeline_id}: {config['name']}")
             
-            # Use the pipeline's own start method which handles threading internally
-            pipeline.start()
-            
-            # Signal successful startup
-            if startup_status:
+            # The manager thread is the processing thread; no extra polling thread.
+            pipeline.thread = threading.current_thread()
+            pipeline._start_time = time.perf_counter()
+            if startup_status is not None:
                 startup_status['started'] = True
-            
-            # Keep track of the pipeline until it's stopped
-            while pipeline_id in self.active_pipelines:
-                time.sleep(1)
-                # Check if pipeline is still running using the pipeline's state
-                if hasattr(pipeline, 'is_running') and not pipeline.is_running():
-                    print(f"Pipeline {pipeline_id} is no longer running")
-                    # Check if this was due to an error
-                    if pipeline_id in self.active_pipelines:
-                        if hasattr(pipeline, 'has_error') and pipeline.has_error():
-                            err = pipeline.get_error()
-                            self.logger.error(f"Pipeline {pipeline_id} stopped with error: {err}")
-                            self.runtime_errors[pipeline_id] = str(err)
-                            self.store.set_status(pipeline_id, 'error')
-                        else:
-                            self.logger.info(f"Pipeline {pipeline_id} stopped normally")
-                        # Clean up both active pipelines and threads
-                        self._cleanup_stale_pipeline_state(pipeline_id)
-                    break
+            pipeline.run()
+            error = pipeline.get_error()
+            self._cleanup_stale_pipeline_state(pipeline_id)
+            if error:
+                self.runtime_errors[pipeline_id] = str(error)
+                self.store.set_status(pipeline_id, 'error')
 
             self.logger.info(f"Pipeline {pipeline_id} stopped")
 

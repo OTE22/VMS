@@ -1,5 +1,6 @@
 import sys
 import os
+import math
 
 
 # Add the project root to the path for imports
@@ -48,15 +49,19 @@ class UltralyticsEngine(BaseInferenceEngine):
         self.deployment = None
         self.use_openvino = False
         self.openvino_model_path = None
-        # Enable tracking by default for DeepSORT integration
-        self.tracking_enabled = kwargs.get('tracking', True)  # Enable tracking by default
-        # Use Bot-SORT - THE MOST POWERFUL tracker available in Ultralytics (StrongSORT-like)
-        # Bot-SORT combines: ReID + Kalman filter (VERY POWERFUL, similar to StrongSORT)
-        # Note: Standalone strongsort package has Python 3.12 compatibility issues
-        # Bot-SORT is the best alternative and works perfectly with Ultralytics
-        # Performance: Bot-SORT ≈ StrongSORT > OCSORT > ByteTrack
-        self.tracker = self._resolve_tracker() if self.tracking_enabled else None
-        print(f"[STRONGSORT INIT] Bot-SORT tracking initialized (StrongSORT-like): tracking_enabled={self.tracking_enabled}, tracker={self.tracker}")
+        # Separate persistent tracker per engine/camera. ReID is controlled by its YAML.
+        self.tracking_enabled = kwargs.get('tracking', True)
+        self.tracker = kwargs.get('tracker') or (self._resolve_tracker() if self.tracking_enabled else None)
+        self.tracker_buffer_seconds = float(kwargs.get('tracker_buffer_seconds', 6.0))
+        self.tracking_fps = float(kwargs.get('tracking_fps', 5.0))
+        if not math.isfinite(self.tracker_buffer_seconds) or not 0 < self.tracker_buffer_seconds <= 120:
+            raise ValueError("Tracker buffer must be finite and in (0, 120] seconds")
+        if not math.isfinite(self.tracking_fps) or self.tracking_fps < 0:
+            raise ValueError("Tracking FPS must be finite and nonnegative")
+        self.tracking_fps = self.tracking_fps or 5.0
+        self.tracking_epoch = 0
+        self._last_tracking_at = None
+        self.logger.debug("Tracking enabled=%s tracker=%s", self.tracking_enabled, self.tracker)
         
         # Configure Ultralytics to be less verbose
         try:
@@ -495,124 +500,47 @@ except Exception as e:
         
         return image
     
+    def reset_tracking(self):
+        predictor = getattr(self.model, 'predictor', None)
+        if predictor is not None:
+            for tracker in getattr(predictor, 'trackers', []):
+                tracker.reset()
+            if hasattr(predictor, 'trackers'):
+                del predictor.trackers
+        self.tracking_epoch = getattr(self, 'tracking_epoch', 0) + 1
+        self._last_tracking_at = None
+
     def _infer(self, preprocessed_input: np.ndarray) -> Any:
-        """Run YOLO inference"""
         if self.model is None:
-            return None
-        
-        # Validate device again before inference as additional safety
-        inference_device = self.device
-        if inference_device in ['cuda', '0', 'gpu'] or (isinstance(inference_device, str) and inference_device.isdigit()):
+            raise RuntimeError('Model is not loaded')
+        if not self.tracking_enabled:
+            return self.model(preprocessed_input, device=self.device, verbose=False)
+        import time
+        now = time.monotonic()
+        if (self._last_tracking_at is not None and
+                now - self._last_tracking_at > self.tracker_buffer_seconds):
+            self.reset_tracking()
+        self._last_tracking_at = now
+        candidates = list(dict.fromkeys([self.tracker, 'ocsort.yaml', 'bytetrack.yaml']))
+        last_error = None
+        for index, tracker in enumerate(candidates):
             try:
-                import torch
-                if not torch.cuda.is_available():
-                    print(f"WARNING: CUDA device '{inference_device}' not available during inference. Using CPU.")
-                    inference_device = 'cpu'
-            except ImportError:
-                print(f"WARNING: PyTorch not available during inference. Using CPU instead of '{inference_device}'.")
-                inference_device = 'cpu'
-        
-        # Use Bot-SORT tracking (StrongSORT-like, most powerful available)
-        if self.tracking_enabled and self.tracker:
-            # Only print tracker name occasionally to reduce spam
-            if not hasattr(self, '_tracker_print_count'):
-                self._tracker_print_count = 0
-            self._tracker_print_count += 1
-            if self._tracker_print_count % 30 == 1:  # Print every 30 frames
-                print(f"[STRONGSORT] Using Bot-SORT tracker (StrongSORT-like): {self.tracker}")
-            try:
-                # Use Bot-SORT (StrongSORT-like with ReID + Kalman)
-                # Add conf and iou parameters to help tracking work better
-                if self.use_openvino or inference_device.startswith('intel:'):
-                    results = self.model.track(
-                        preprocessed_input, 
-                        device=inference_device.lower(), 
-                        verbose=False,
-                        tracker=self.tracker,
-                        persist=True,  # Maintain track IDs across frames
-                        conf=0.25,  # Lower confidence for tracking to catch more objects
-                        iou=0.5  # IOU threshold for tracking
-                    )
-                else:
-                    results = self.model.track(
-                        preprocessed_input, 
-                        device=inference_device, 
-                        verbose=False,
-                        tracker=self.tracker,
-                        persist=True,  # Maintain track IDs across frames
-                        conf=0.25,  # Lower confidence for tracking to catch more objects
-                        iou=0.5  # IOU threshold for tracking
-                    )
-                
-                # Debug: Check if results have track IDs
-                if results and len(results) > 0:
-                    result = results[0]
-                    if hasattr(result, 'boxes') and result.boxes is not None:
-                        if hasattr(result.boxes, 'id') and result.boxes.id is not None:
-                            track_ids = result.boxes.id.cpu().numpy() if hasattr(result.boxes.id, 'cpu') else result.boxes.id
-                            print(f"[STRONGSORT] ✓ Found {len(track_ids)} track IDs: {track_ids.tolist() if hasattr(track_ids, 'tolist') else track_ids}")
-                        else:
-                            # Tracking might need a few frames to initialize - this is normal
-                            # Only warn if we've been tracking for a while
-                            if not hasattr(self, '_tracking_warn_count'):
-                                self._tracking_warn_count = 0
-                            self._tracking_warn_count += 1
-                            # Only print warning every 30 frames to reduce spam
-                            if self._tracking_warn_count % 30 == 0:
-                                print(f"[STRONGSORT] INFO: Tracking initializing (boxes.id not available yet, frame {self._tracking_warn_count})")
-                            
-            except Exception as e:
-                # If Bot-SORT fails, try fallback trackers
-                print(f"[STRONGSORT] ✗ Bot-SORT failed: {e}")
-                print(f"[STRONGSORT] Trying fallback trackers...")
-                
-                fallback_trackers = ["ocsort.yaml", "bytetrack.yaml"]
-                tracker_used = None
-                results = None
-                
-                for tracker_name in fallback_trackers:
-                    try:
-                        print(f"[STRONGSORT] Trying fallback: {tracker_name}")
-                        if self.use_openvino or inference_device.startswith('intel:'):
-                            results = self.model.track(
-                                preprocessed_input, 
-                                device=inference_device.lower(), 
-                                verbose=False,
-                                tracker=tracker_name,
-                                persist=True
-                            )
-                        else:
-                            results = self.model.track(
-                                preprocessed_input, 
-                                device=inference_device, 
-                                verbose=False,
-                                tracker=tracker_name,
-                                persist=True
-                            )
-                        tracker_used = tracker_name
-                        print(f"[STRONGSORT] ✓ Using fallback tracker: {tracker_name}")
-                        break
-                    except Exception as fallback_error:
-                        print(f"[STRONGSORT] ✗ Fallback {tracker_name} failed: {fallback_error}")
-                        continue
-                
-                if results is None:
-                    # All trackers failed, fall back to regular inference
-                    print(f"[STRONGSORT] WARNING: All trackers failed, using regular inference without tracking")
-                    if self.use_openvino or inference_device.startswith('intel:'):
-                        results = self.model(preprocessed_input, device=inference_device.lower(), verbose=False)
-                    else:
-                        results = self.model(preprocessed_input, device=inference_device, verbose=False)
-        else:
-            print(f"[TRACKING] Tracking disabled (tracking_enabled={self.tracking_enabled}, tracker={self.tracker})")
-            # Use regular inference without tracking
-            if self.use_openvino or inference_device.startswith('intel:'):
-                results = self.model(preprocessed_input, device=inference_device.lower(), verbose=False)
-            else:
-                results = self.model(preprocessed_input, device=inference_device, verbose=False)
-        
-        return results
-    
+                if index:
+                    self.reset_tracking()
+                results = self.model.track(preprocessed_input, device=self.device, verbose=False,
+                                           tracker=tracker, persist=True, conf=0.1, iou=0.5)
+                self.tracker = tracker
+                self._last_tracking_at = now
+                predictor = getattr(self.model, 'predictor', None)
+                for active in getattr(predictor, 'trackers', []):
+                    active.max_frames_lost = max(1, round(self.tracker_buffer_seconds * self.tracking_fps))
+                return results
+            except Exception as exc:
+                last_error = exc
+                self.logger.warning('Tracker %s failed (%s)', tracker, type(exc).__name__)
+        # Do not silently switch to detection while claiming tracking is active.
+        raise RuntimeError('All configured trackers failed') from last_error
+
     def _postprocess(self, raw_output: Any) -> Dict[str, Any]:
         """Postprocess YOLO results"""
         return raw_output
@@ -735,8 +663,10 @@ except Exception as e:
         
         # Handle Ultralytics Results objects properly
         for result in results:
+            result = result.cpu() if hasattr(result, "cpu") else result
             # Detection results (standard bounding boxes)
-            if hasattr(result, 'boxes') and result.boxes is not None:
+            if (hasattr(result, 'boxes') and result.boxes is not None
+                    and getattr(result, 'masks', None) is None and getattr(result, 'keypoints', None) is None):
                 boxes = result.boxes
                 for i in range(len(boxes)):
                     # Get bounding box coordinates
@@ -765,17 +695,17 @@ except Exception as e:
                         if boxes.id is not None and i < len(boxes.id):
                             try:
                                 track_id = int(boxes.id[i].cpu().numpy())
-                                print(f"[TRACKING] ✓ Extracted track_id={track_id} for {class_name} (conf={confidence:.3f}, bbox={bbox})")
+                                self.logger.debug("Tracking metadata processed")
                             except (IndexError, AttributeError, TypeError) as e:
-                                print(f"[TRACKING] ✗ Error extracting track_id for detection {i}: {e}")
+                                self.logger.debug("Tracking metadata processed")
                                 track_id = None
                         else:
                             if boxes.id is None:
-                                print(f"[TRACKING] ✗ boxes.id is None for detection {i}")
+                                self.logger.debug("Tracking metadata processed")
                             else:
-                                print(f"[TRACKING] ✗ Index {i} out of range (boxes.id length={len(boxes.id)})")
+                                self.logger.debug("Tracking metadata processed")
                     else:
-                        print(f"[TRACKING] ✗ boxes has no 'id' attribute")
+                        self.logger.debug("Tracking metadata processed")
                     
                     detection_result = {
                         "type": "detection",
@@ -786,7 +716,7 @@ except Exception as e:
                         "bbox_format": bbox_format
                     }
                     
-                    # Add track_id if available (for DeepSORT deduplication)
+                    # Preserve the tracker ID for event deduplication
                     if track_id is not None:
                         detection_result["track_id"] = track_id
                     

@@ -6,6 +6,10 @@ import queue
 import uuid
 import time
 import json
+import math
+import heapq
+import itertools
+import copy
 import cv2
 from typing import Dict, Any, Optional
 from collections import defaultdict
@@ -52,6 +56,7 @@ class InferencePipeline:
 
     def __init__(self) -> None:
         self.id = str(uuid.uuid4())  # Overwritten with the stable builder pipeline_id by PipelineManager
+        self.node_id = os.getenv("ARMYEYE_NODE_ID", "")
         self.pipeline_name = ""  # Human-readable builder name, set by PipelineManager
         self.logger = logging.getLogger(f'InferencePipeline.{self.id[:8]}')
         self.nodes = []
@@ -62,6 +67,9 @@ class InferencePipeline:
         self._latest_frame = None  # Store latest processed frame for streaming
         self._inference_enabled = True  # Flag to enable/disable inference processing
 
+        self._preview_cache = {}
+        self._preview_lock = threading.Lock()
+        self._viewer_count = 0
         self._frame_lock = threading.Lock()  # Thread-safe access to latest frame
 
         self._frame_counter = 0  # Count processed frames
@@ -149,7 +157,7 @@ class InferencePipeline:
         # --- Tracking state (guarded by _tracking_lock) ---
         # track_key -> {best_det, best_frame, first_seen, last_seen, last_improved}
         self._track_best = {}
-        # track_key -> {sent_at, bbox}  (successful-send cooldown record + reuse check)
+        # track_key -> {sent_at, bbox} (successful-send cooldown)
         self._track_last_sent = {}
         # track_keys currently queued/publishing/retrying (prevents duplicate enqueue)
         self._pending_track_keys = set()
@@ -177,6 +185,27 @@ class InferencePipeline:
         self._publish_queue: "queue.Queue" = queue.Queue(maxsize=self.PUBLISH_QUEUE_SIZE)
         self._publisher_stop_event = threading.Event()
         self._publisher_thread: Optional[threading.Thread] = None
+        self._retry_jobs = []
+        self._retry_sequence = itertools.count()
+        self._work_lock = threading.RLock()
+        self._candidate_stop = threading.Event()
+        self._candidate_thread = None
+        self._shutdown_lock = threading.Lock()
+        self._inflight = 0
+        self._queue_bytes = 0
+        self._durable_failures = 0
+        self.PUBLISH_QUEUE_BYTES = 64 * 1024 * 1024
+        self.PUBLISH_MAX_AGE_SECONDS = 300.0
+        self._terminal_tracks = {}
+        self._failed_iou = []
+        self._outbox = None
+        self._file_failures = set()
+        self._file_groups = {}
+        self._file_seen = {}
+        self._tracking_session = uuid.uuid4().hex
+        self._snapshot_source = None
+        self._snapshot_frame = None
+        self._tracking_epoch = 0
         self._draining = False  # True during graceful shutdown while the queue drains
 
         self.logger.info(f"Pipeline initialized with ID: {self.id}")
@@ -191,6 +220,8 @@ class InferencePipeline:
             self._pending_track_keys = set()
             self._failed_backoff = {}
             self._pending_iou_keys = set()
+            self._terminal_tracks = {}
+            self._failed_iou = []
         with self._counter_lock:
             self._persons_sent = 0
             self._sent_person_track_ids = set()
@@ -224,31 +255,24 @@ class InferencePipeline:
     def _make_track_key(self, det):
         """Normalized key that avoids collisions across classes / tracker restarts.
         The original track_id is preserved separately in the payload."""
-        return (str(det.get('class_name', 'unknown')).lower(), str(det.get('track_id')))
+        return (str(det.get('class_name', 'unknown')).lower(),
+                f"{getattr(self, '_tracking_session', '')}:{getattr(self, '_tracking_epoch', 0)}:{det.get('track_id')}")
 
     def _update_track_candidate(self, det, frame, now):
         """Create/update the highest-confidence candidate for a tracked detection.
-        frame.copy() happens only when the best confidence improves (memory-friendly).
-        Applies the tracker-ID-reuse heuristic against the last successfully sent bbox."""
+        An owned snapshot is shared across detections on the same captured frame.
+        Only higher-confidence observations replace a candidate's selected frame."""
         track_key = self._make_track_key(det)
         confidence = det.get('confidence', 0)
         class_name = det.get('class_name', 'unknown')
         bbox = det.get('bbox', [])
 
         with self._tracking_lock:
-            # Tracker-ID reuse: if this key was sent before and the new bbox is
-            # spatially unrelated to the sent one after a short gap, treat it as a
-            # NEW occupant of a reused id and clear the cooldown so it can be sent.
+            # Movement is not evidence of a new person. Epochs change on tracker resets.
             sent_rec = self._track_last_sent.get(track_key)
-            if sent_rec is not None:
-                gap = now - sent_rec.get('sent_at', 0)
-                if gap >= self.REUSE_MIN_GAP_SECONDS and len(bbox) == 4 and len(sent_rec.get('bbox', [])) == 4:
-                    if self._iou(bbox, sent_rec['bbox']) < self.REUSE_IOU_THRESHOLD:
-                        del self._track_last_sent[track_key]
-                        self._failed_backoff.pop(track_key, None)
-                        self.logger.info(f"TRACK_REUSED pipeline_id={self.id} track_key={track_key} "
-                                         f"gap={gap:.1f}s - treating reused track_id as a new person")
-                        sent_rec = None
+            if track_key in self._terminal_tracks:
+                self._terminal_tracks[track_key] = now
+                return
 
             # Still within success cooldown -> ignore (already delivered recently)
             if sent_rec is not None and (now - sent_rec.get('sent_at', 0)) < self.TRACK_TTL_SECONDS:
@@ -261,11 +285,19 @@ class InferencePipeline:
             if backoff_until is not None and now < backoff_until:
                 return
 
+            frames = {id(e['best_frame']): e['best_frame'] for e in self._track_best.values()
+                      if e.get('best_frame') is not None}
+            if frame is not None and self._snapshot_source is not frame and (
+                    sum(f.nbytes for f in frames.values()) + frame.nbytes + self._queue_bytes > self.PUBLISH_QUEUE_BYTES):
+                with self._counter_lock:
+                    self._dropped_events += 1
+                return
             entry = self._track_best.get(track_key)
             if entry is None:
                 self._track_best[track_key] = {
                     'best_det': det,
-                    'best_frame': frame.copy() if frame is not None else None,
+                    'best_frame': self._snapshot(frame),
+                    'captured_at': self._last_capture_wall or now,
                     'first_seen': now,
                     'last_seen': now,
                     'last_improved': now,
@@ -276,7 +308,8 @@ class InferencePipeline:
                 entry['last_seen'] = now
                 if confidence > entry['best_det'].get('confidence', 0):
                     entry['best_det'] = det
-                    entry['best_frame'] = frame.copy() if frame is not None else None
+                    entry['best_frame'] = self._snapshot(frame)
+                    entry['captured_at'] = self._last_capture_wall or now
                     entry['last_improved'] = now
                     self.logger.info(f"TRACK_BEST_UPDATED pipeline_id={self.id} class={class_name} "
                                      f"track_id={det.get('track_id')} track_key={track_key} conf={confidence:.3f}")
@@ -306,6 +339,7 @@ class InferencePipeline:
                     'det': entry['best_det'],
                     'frame': entry['best_frame'],
                     'first_seen': entry['first_seen'],
+                    'captured_at': entry.get('captured_at', entry['first_seen']),
                 })
         return jobs
 
@@ -315,6 +349,10 @@ class InferencePipeline:
         cls = str(det.get('class_name', 'unknown')).lower()
         bbox = det.get('bbox', [])
         with self._tracking_lock:
+            self._failed_iou = [r for r in self._failed_iou if now < r['until']]
+            if any(r['cls'] == cls and self._iou(bbox, r['bbox']) > self.DEDUP_IOU_THRESHOLD
+                   for r in self._failed_iou):
+                return None
             # Expire old successfully-published IOU history
             history = [h for h in self._sent_objects[cls] if now - h['ts'] < self.DEDUP_TTL_SECONDS]
             self._sent_objects[cls] = history
@@ -329,7 +367,8 @@ class InferencePipeline:
             iou_key = (cls, tuple(round(float(v), 1) for v in bbox) if len(bbox) == 4 else tuple())
             self._pending_iou_keys.add(iou_key)
         return {'track_key': None, 'iou_key': iou_key, 'det': det,
-                'frame': frame.copy() if frame is not None else None, 'first_seen': now}
+                'frame': self._snapshot(frame), 'first_seen': now,
+                'captured_at': self._last_capture_wall or now}
 
     def _cleanup_tracks(self):
         """Expire stale success-cooldown, candidate, backoff and IOU records.
@@ -341,11 +380,10 @@ class InferencePipeline:
                 del self._track_last_sent[k]
             for k in [k for k, t in self._failed_backoff.items() if now >= t]:
                 del self._failed_backoff[k]
-            # Stale candidates that are not pending (defensive; normally consumed by collect)
-            stale_after = self.MAX_COLLECT_SECONDS + self.TRACK_LOST_TIMEOUT_SECONDS + 5.0
-            for k in [k for k, e in self._track_best.items()
-                      if k not in self._pending_track_keys and now - e['first_seen'] > stale_after]:
-                del self._track_best[k]
+            # Ready candidates are never expired before delivery. Terminal suppression
+            # is released only after the track has actually disappeared for the TTL.
+            self._terminal_tracks = {k: t for k, t in self._terminal_tracks.items()
+                                     if now - t < self.TRACK_TTL_SECONDS}
             for cls in list(self._sent_objects.keys()):
                 self._sent_objects[cls] = [h for h in self._sent_objects[cls]
                                            if now - h['ts'] < self.DEDUP_TTL_SECONDS]
@@ -353,36 +391,127 @@ class InferencePipeline:
     # ------------------------------------------------------------------ #
     # Background publisher worker
     # ------------------------------------------------------------------ #
+    def _snapshot(self, frame):
+        if frame is None:
+            return None
+        # One owned snapshot per captured frame, shared by all its detections.
+        if self._snapshot_source is not frame:
+            self._snapshot_source = frame
+            self._snapshot_frame = frame.copy()
+            self._snapshot_frame.flags.writeable = False
+        return self._snapshot_frame
+
     def _start_publisher_worker(self):
+        if self._publisher_thread and self._publisher_thread.is_alive():
+            raise RuntimeError('Previous publisher has not stopped')
         self._publisher_stop_event.clear()
+        self._candidate_stop.clear()
+        if self._outbox:
+            # Rehydrate once, including when this same instance is restarted.
+            with self._work_lock:
+                self._retry_jobs.clear()
+                self._publish_queue = queue.Queue(maxsize=self.PUBLISH_QUEUE_SIZE)
+                self._queue_bytes = 0
+                self._durable_failures = 0
+            for record in self._outbox.records():
+                if record.get('state') == 'failed':
+                    self._durable_failures += 1
+                recovered = record['job']
+                if recovered.get('source_file'):
+                    self._file_seen[recovered['source_file']] = recovered.get('source_fingerprint')
+                if record.get('state') == 'pending':
+                    job = record['job']
+                    if job.get('track_key'):
+                        job['track_key'] = tuple(job['track_key'])
+                        self._pending_track_keys.add(job['track_key'])
+                    if job.get('iou_key'):
+                        job['iou_key'] = (job['iou_key'][0], tuple(job['iou_key'][1]))
+                        self._pending_iou_keys.add(job['iou_key'])
+                    job['queued_bytes'] = True
+                    self._queue_bytes += job.get('bytes', 0)
+                    self._schedule(job, 0)
         self._publisher_thread = threading.Thread(
             target=self._publisher_worker, name=f"pub-{self.id[:8]}", daemon=True)
         self._publisher_thread.start()
+        self._candidate_thread = threading.Thread(target=self._candidate_loop,
+                                                  name=f"events-{self.id[:8]}", daemon=True)
+        self._candidate_thread.start()
+
+    def _candidate_loop(self):
+        while not self._candidate_stop.wait(0.1):
+            for job in self._collect_ready_tracks(time.time()):
+                self._enqueue_publish_job(job)
+
+    def _prepare_job(self, job):
+        if isinstance(job.get('track_key'), list):
+            job['track_key'] = tuple(job['track_key'])
+        if isinstance(job.get('iou_key'), list):
+            job['iou_key'] = (job['iou_key'][0], tuple(job['iou_key'][1]))
+        if 'payload' in job:
+            return
+        frame = job.get('frame')
+        annotated = None
+        if self.result_publisher.do_any_destinations_need_result_image() and frame is not None:
+            # Annotate the event's selected frame, never the latest preview frame.
+            annotated = frame.copy()
+            det = job['det']
+            x1, y1, x2, y2 = (int(v) for v in det['bbox'])
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(annotated, f"{det.get('class_name')} {det.get('confidence', 0):.2f}",
+                        (x1, max(15, y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, .5, (0, 255, 0), 1)
+        job['images'] = self.result_publisher.prepare_images(frame, annotated)
+        job['payload'] = self._build_payload(job['det'], job.get('json_results'))
+        job['payload']['captured_at'] = job.get('captured_at', job.get('first_seen', time.time()))
+        job['payload']['capture_clock'] = 'application_read'
+        job['targets'] = self.result_publisher.destination_ids()
+        job['accepted'] = []
+        job['terminal'] = []
+        job['created_at'] = time.time()
+        job['attempt'] = 0
+        job.pop('frame', None)
+        job.pop('json_results', None)
+        job['bytes'] = len(json.dumps(job, allow_nan=False, separators=(',', ':')).encode())
+
+    def _persist_job(self, job, state='pending'):
+        if self._outbox:
+            saved = job.get('outbox_saved', False)
+            job['outbox_saved'] = True
+            try:
+                self._outbox.put(job['payload']['event_id'], {'state': state, 'job': job})
+            except Exception:
+                job['outbox_saved'] = saved
+                raise
 
     def _enqueue_publish_job(self, job):
-        """Enqueue a job for the background worker. Never silently drops: on a full
-        queue we log QUEUE_FULL and, if still full after a brief wait, count it as a
-        dropped event and release the pending mark so the track can be re-collected."""
         try:
-            self._publish_queue.put_nowait(job)
-        except queue.Full:
-            self.logger.warning(f"QUEUE_FULL pipeline_id={self.id} queue_size={self._publish_queue.qsize()} "
-                                f"track_key={job.get('track_key')} - waiting briefly")
-            try:
-                self._publish_queue.put(job, timeout=1.0)
-            except queue.Full:
-                with self._counter_lock:
-                    self._dropped_events += 1
-                self._release_pending(job)
-                self.logger.error(f"QUEUE_FULL pipeline_id={self.id} dropped event track_key={job.get('track_key')} "
-                                  f"(queue still full) - will be re-collected")
-                return
-        with self._counter_lock:
-            self._queued_events += 1
-        det = job['det']
-        self.logger.info(f"PUBLISH_QUEUED pipeline_id={self.id} class={det.get('class_name')} "
-                         f"track_id={det.get('track_id')} track_key={job.get('track_key')} "
-                         f"conf={det.get('confidence', 0):.3f} queue_size={self._publish_queue.qsize()}")
+            self._prepare_job(job)
+            if not job['targets']:
+                raise ValueError('No enabled configured destination')
+            with self._work_lock:
+                if self._queue_bytes + job['bytes'] > self.PUBLISH_QUEUE_BYTES:
+                    raise ValueError('Event queue byte limit reached')
+                if self._publish_queue.full():
+                    raise ValueError('Event queue count limit reached')
+                self._persist_job(job)
+                self._publish_queue.put_nowait(job)
+                self._queue_bytes += job['bytes']
+                job['queued_bytes'] = True
+            with self._counter_lock:
+                self._queued_events += 1
+            return True
+        except Exception as exc:
+            with self._counter_lock:
+                self._dropped_events += 1
+            if job.get('source_file'):
+                self._file_failures.add(job['source_file'])
+            self._handle_publish_failure(job, str(exc), terminal=False)
+            self.logger.error('Event not accepted: %s', type(exc).__name__)
+            return False
+
+    def _schedule(self, job, delay):
+        with self._work_lock:
+            heapq.heappush(self._retry_jobs, (time.monotonic() + delay,
+                                            next(self._retry_sequence), job))
 
     def _release_pending(self, job):
         """Remove a job's pending marker so the track/detection can be collected again."""
@@ -401,7 +530,7 @@ class InferencePipeline:
         # NOT exactly-once processing.
         return {
             "event_id": uuid.uuid4().hex,
-            "node_id": self.id,
+            "node_id": self.node_id or self.id,
             "pipeline_id": self.id,
             "pipeline_name": self.pipeline_name,
             "location_name": self.pipeline_name,  # Camera name shown on dashboard cards
@@ -413,114 +542,129 @@ class InferencePipeline:
         }
 
     def _publisher_worker(self):
-        """Drain the publish queue, delivering each job with retries + backoff.
-        Delivery is confirmed via ResultPublisher.publish_sync() before a track is
-        marked sent. Rate-limited destinations cause a wait, not a failure."""
-        while not (self._publisher_stop_event.is_set() and self._publish_queue.empty()):
+        while not self._publisher_stop_event.is_set():
+            job, queued = None, False
+            with self._work_lock:
+                if self._retry_jobs and self._retry_jobs[0][0] <= time.monotonic():
+                    _, _, job = heapq.heappop(self._retry_jobs)
+            if job is None:
+                try:
+                    job = self._publish_queue.get(timeout=0.1)
+                    queued = True
+                except queue.Empty:
+                    continue
+            with self._work_lock:
+                self._inflight += 1
             try:
-                job = self._publish_queue.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            try:
-                self._deliver_job(job)
-            except Exception as e:
-                self.logger.error(f"PUBLISH_FAILED pipeline_id={self.id} unexpected worker error: {e}", exc_info=True)
-                self._handle_publish_failure(job, str(e))
+                self._deliver_job(job, deferred=True)
+            except Exception as exc:
+                self.logger.exception('Event worker failed')
+                self._handle_publish_failure(job, type(exc).__name__)
             finally:
-                self._publish_queue.task_done()
+                with self._work_lock:
+                    self._inflight -= 1
+                if queued:
+                    self._publish_queue.task_done()
 
-    def _deliver_job(self, job):
-        det = job['det']
-        payload = self._build_payload(det, job.get('json_results'))
-        frame = job.get('frame')
-        need_image = self.result_publisher.do_any_destinations_need_image()
-        need_result_image = self.result_publisher.do_any_destinations_need_result_image()
-        img = frame if need_image else None
-        result_img = self._latest_frame if need_result_image else None
-
-        delay = self.PUBLISH_RETRY_DELAY_SECONDS
-        last_error = None
-        attempt = 0
-        max_attempts = self.PUBLISH_MAX_RETRIES + 1
-
-        # Keep trying while attempts remain and we're either not shutting down,
-        # or we are but still draining the queue on graceful stop.
-        while attempt < max_attempts and (not self._publisher_stop_event.is_set() or self._draining):
-            attempt += 1
-            self.logger.info(f"PUBLISH_ATTEMPT pipeline_id={self.id} class={det.get('class_name')} "
-                             f"track_id={det.get('track_id')} attempt={attempt}/{max_attempts}")
+    def _deliver_job(self, job, deferred=False):
+        self._prepare_job(job)
+        if not job['targets']:
+            self._handle_publish_failure(job, 'No enabled destination', terminal=True)
+            return
+        while not self._publisher_stop_event.is_set():
+            if time.time() - job['created_at'] > self.PUBLISH_MAX_AGE_SECONDS:
+                self._handle_publish_failure(job, 'Event delivery deadline exceeded')
+                return
+            remaining = set(job['targets']) - set(job['accepted']) - set(job['terminal'])
+            if not remaining:
+                if not job['terminal']:
+                    self._handle_publish_success(job, {'successful_destinations': job['accepted']})
+                else:
+                    self._handle_publish_failure(job, 'One or more destinations rejected the event', terminal=True)
+                return
             with self._counter_lock:
                 self._publish_attempts += 1
-            res = self.result_publisher.publish_sync(payload, img, result_img)
-
-            if res.get("success"):
-                self._handle_publish_success(job, res)
-                return
-
-            # Only rate-limited (nothing failed, nothing succeeded) -> wait, retry same attempt
-            if (not res.get("failed_destinations") and not res.get("terminal_destinations")
-                    and res.get("rate_limited_destinations")
-                    and res.get("attempted", 0) > 0):
+            res = self.result_publisher.publish_sync(job['payload'], prepared_images=job['images'],
+                                                     destination_ids=remaining)
+            job['accepted'] = sorted(set(job['accepted']) | set(res['successful_destinations']))
+            job['terminal'] = sorted(set(job['terminal']) | set(res['terminal_destinations']) |
+                                     set(res['disabled_destinations']) | set(res['skipped_destinations']))
+            # Deleted destinations must not make an event look delivered.
+            reported = set().union(*(set(res[k]) for k in ('successful_destinations',
+                'terminal_destinations', 'disabled_destinations', 'skipped_destinations',
+                'failed_destinations', 'rate_limited_destinations')))
+            job['terminal'] = sorted(set(job['terminal']) | (remaining - reported))
+            self._persist_job(job)
+            remaining = set(job['targets']) - set(job['accepted']) - set(job['terminal'])
+            if not remaining:
+                continue
+            limited = bool(res['rate_limited_destinations']) and not res['failed_destinations']
+            if limited:
                 with self._counter_lock:
                     self._publish_rate_limited += 1
-                self.logger.info(f"PUBLISH_RATE_LIMITED pipeline_id={self.id} track_id={det.get('track_id')} "
-                                 f"destinations={res.get('rate_limited_destinations')} - waiting")
-                attempt -= 1  # this doesn't consume a retry
-                if self._interruptible_wait(0.25):
-                    break
-                continue
-
-            last_error = json.dumps(res.get("errors", {})) if res.get("errors") else "no enabled destination accepted"
-
-            # TERMINAL: no retry slot can change these verdicts - stop now, make
-            # no further HTTP request, sleep through none of the remaining
-            # backoffs, and do NOT re-arm the track (see _handle_publish_failure).
-            #   1. every attempted destination rejected the payload (400/413/422)
-            #   2. a destination-level disable fired this attempt (401/403/404,
-            #      or max_failures just crossed inside the destination lifecycle)
-            #   3. nothing was attempted because every destination is already
-            #      disabled - the old infinite 60s re-arm loop lived here
-            attempted = res.get("attempted", 0)
-            failed = res.get("failed_destinations") or []
-            terminal = res.get("terminal_destinations") or []
-            disabled = res.get("disabled_destinations") or []
-            all_terminal = attempted > 0 and terminal and not failed and not res.get("rate_limited_destinations")
-            all_disabled_now = attempted > 0 and failed and set(failed) == set(disabled)
-            nothing_left = attempted == 0 and res.get("skipped_destinations")
-
-            if all_terminal or all_disabled_now or nothing_left:
-                reason = ("payload rejected (terminal for this delivery)" if all_terminal
-                          else "destination disabled by lifecycle" if all_disabled_now
-                          else "no enabled destination remains")
-                self.logger.error(f"PUBLISH_TERMINAL pipeline_id={self.id} track_id={det.get('track_id')} "
-                                  f"attempt={attempt} reason={reason} error={last_error}")
-                self._handle_publish_failure(job, f"{reason}: {last_error}", terminal=True)
-                return
-
-            # A retryable failure: bounded backoff, honouring any backpressure
-            # hint (Retry-After, already clamped at parse time) as the floor.
-            if attempt < max_attempts:
+                delay = max(0.05, res.get('retry_after') or 0.25)
+            else:
+                job['attempt'] += 1
+                if job['attempt'] >= self.PUBLISH_MAX_RETRIES + 1:
+                    self._handle_publish_failure(job, 'Retry budget exhausted')
+                    return
+                delay = max(min(self.PUBLISH_RETRY_DELAY_SECONDS *
+                                self.PUBLISH_RETRY_BACKOFF ** min(job['attempt'] - 1, 20), 30.0),
+                            res.get('retry_after') or 0)
                 with self._counter_lock:
                     self._publish_retries += 1
-                wait_s = max(delay, res.get("retry_after") or 0)
-                self.logger.warning(f"PUBLISH_RETRY pipeline_id={self.id} track_id={det.get('track_id')} "
-                                    f"attempt={attempt} error={last_error} backoff={wait_s:.1f}s")
-                if self._interruptible_wait(wait_s):
-                    break
-                delay *= self.PUBLISH_RETRY_BACKOFF
-
-        self._handle_publish_failure(job, last_error or "publisher stopped before delivery")
+            if deferred:
+                self._schedule(job, delay)
+                return
+            if self._interruptible_wait(delay):
+                return
 
     def _interruptible_wait(self, seconds):
-        """Wait up to `seconds`, but wake immediately on shutdown unless draining.
-        Returns True if we should abort the retry loop (hard stop, not draining)."""
-        if self._draining:
-            time.sleep(min(seconds, 1.0))
-            return False
-        # returns True when the stop event fires during the wait
         return self._publisher_stop_event.wait(timeout=seconds)
 
+    def _finish_job(self, job, success):
+        with self._work_lock:
+            if job.get('_complete'):
+                return
+            job['_complete'] = True
+            if job.get('queued_bytes'):
+                self._queue_bytes = max(0, self._queue_bytes - job.get('bytes', 0))
+            path, group = job.get('source_file'), job.get('file_group')
+            if not success and path:
+                self._file_failures.add(path)
+            if self._outbox and job.get('outbox_saved'):
+                if success and not path:
+                    self._outbox.remove(job['payload']['event_id'])
+                else:
+                    self._persist_job(job, 'delivered' if success else 'failed')
+                    if not success:
+                        self._durable_failures += 1
+            if not path:
+                return
+            if self._outbox:
+                records = [r for r in self._outbox.records() if r['job'].get('file_group') == group]
+                complete = (len(records) == job.get('file_group_size') and
+                            all(r['state'] == 'delivered' for r in records))
+            else:
+                state = self._file_groups.setdefault(group, {'remaining': job.get('file_group_size', 1), 'failed': False})
+                state['remaining'] -= 1
+                state['failed'] |= not success
+                complete = state['remaining'] == 0 and not state['failed']
+                if state['remaining'] == 0:
+                    self._file_groups.pop(group, None)
+            if complete and path not in self._file_failures:
+                try:
+                    st = os.stat(path)
+                    if [st.st_size, st.st_mtime_ns] == job.get('source_fingerprint'):
+                        os.remove(path)
+                except FileNotFoundError:
+                    pass
+                if self._outbox:
+                    for record in records:
+                        self._outbox.remove(record['job']['payload']['event_id'])
+
     def _handle_publish_success(self, job, result):
+        self._finish_job(job, True)
         det = job['det']
         now = time.time()
         track_key = job.get('track_key')
@@ -541,7 +685,7 @@ class InferencePipeline:
             if class_name == "person":
                 self._persons_sent += 1
                 if det.get('track_id') is not None:
-                    self._sent_person_track_ids.add(det.get('track_id'))
+                    self._sent_person_track_ids.add(track_key or str(det.get('track_id')))
             unique = len(self._sent_person_track_ids)
             total = self._persons_sent
 
@@ -549,7 +693,7 @@ class InferencePipeline:
                          f"class={class_name} track_id={det.get('track_id')} track_key={track_key} "
                          f"conf={det.get('confidence', 0):.3f} destinations={result.get('successful_destinations')}")
         if class_name == "person":
-            msg = (f"[COUNTER] 👤 Persons delivered via webhook: {unique} unique ({total} total)")
+            msg = (f"[COUNTER] 👤 Persons delivered to all event destinations: {unique} unique ({total} total)")
             print(msg)
 
     def _handle_publish_failure(self, job, error, terminal=False):
@@ -558,17 +702,23 @@ class InferencePipeline:
         is NOT re-armed, ending the old infinite
         PUBLISH_FAILED -> re-arm -> 60s -> retry loop. Non-terminal failures
         keep today's behaviour: eligible again after FAILED_BACKOFF_SECONDS."""
+        self._finish_job(job, False)
         det = job['det']
         now = time.time()
         track_key = job.get('track_key')
         with self._tracking_lock:
             if track_key is not None:
                 self._pending_track_keys.discard(track_key)
+                if terminal:
+                    self._terminal_tracks[track_key] = now
                 if not terminal:
                     # Re-eligible after a backoff (not dropped, not hammered)
                     self._failed_backoff[track_key] = now + self.FAILED_BACKOFF_SECONDS
             if job.get('iou_key') is not None:
                 self._pending_iou_keys.discard(job['iou_key'])
+                self._failed_iou.append({'cls': str(det.get('class_name', '')).lower(),
+                                         'bbox': det.get('bbox', []),
+                                         'until': now + (self.TRACK_TTL_SECONDS if terminal else self.FAILED_BACKOFF_SECONDS)})
         with self._counter_lock:
             self._publish_failures += 1
         tail = ("terminal - track NOT re-armed" if terminal
@@ -1035,7 +1185,7 @@ class InferencePipeline:
         """
         if not self._is_live_source():
             return False
-        delay = min(self.RECONNECT_INITIAL_DELAY * (2 ** self._reconnect_attempts),
+        delay = min(self.RECONNECT_INITIAL_DELAY * (2 ** min(self._reconnect_attempts, 30)),
                     self.RECONNECT_MAX_DELAY)
         self._reconnect_attempts += 1
         self.logger.warning(
@@ -1049,6 +1199,10 @@ class InferencePipeline:
                 pass
             self.source.connect()
             if self.source.isOpened():
+                reset = getattr(getattr(self, 'inference_engine', None), 'reset_tracking', None)
+                if reset:
+                    reset()
+                    self._tracking_epoch += 1
                 # NOTE: do NOT reset the backoff here. cv2.VideoCapture reports a dead RTSP
                 # stream as "opened", so treating this as success made the backoff restart
                 # at 1s forever (measured: 78 reconnects in 200s against a dead camera).
@@ -1244,6 +1398,13 @@ class InferencePipeline:
                             break
                         continue
 
+                if is_folder_source and self._should_auto_delete_images():
+                    path = self.source.get_current_file_path()
+                    if path:
+                        st = os.stat(path)
+                        if self._file_seen.get(path) == [st.st_size, st.st_mtime_ns]:
+                            continue
+
                 # Frame successfully read - the ONLY proof the source is genuinely back,
                 # so this is where the reconnect backoff resets.
                 if self._reconnect_attempts:
@@ -1274,10 +1435,20 @@ class InferencePipeline:
                 # re-checked here against post-read time, so it CAN come due on a frame we
                 # chose to skip - inferring on None would crash the pipeline.
                 if (frame is not None and self._inference_enabled
-                        and self._due_for_inference(now_perf)):
+                        and (is_folder_source or self._due_for_inference(now_perf))):
                     self._mark_inferred(now_perf)
                     t0 = time.perf_counter()
+                    if is_folder_source:
+                        reset = getattr(self.inference_engine, 'reset_tracking', None)
+                        if reset:
+                            reset()
                     results = self.inference_engine.infer(frame)
+                    self._tracking_epoch = getattr(self.inference_engine, "tracking_epoch", self._tracking_epoch)
+                    if isinstance(results, dict) and results.get('success') is False:
+                        self._error_state = results.get('error', 'Inference failed')
+                        results = None
+                    elif results is not None:
+                        self._error_state = None
                     latency_ms = (time.perf_counter() - t0) * 1000
 
                     self._inference_latencies.append(latency_ms)
@@ -1288,10 +1459,11 @@ class InferencePipeline:
 
                 # Handle frame storage for streaming
                 if results is not None:
-                    json_results = self.inference_engine.result_to_json(results)
+                    from InferenceEngine.detection_contract import normalize_result
+                    json_results = normalize_result(self.inference_engine.result_to_json(results))
                     # print(f"Pipeline {self.id}: Inference results: {json.dumps(json_results)}")
 
-                    if self.result_publisher.do_any_destinations_need_result_image() or self._is_streaming:
+                    if self._is_streaming:
                         with self._frame_lock:
                             output = self.inference_engine.draw(frame, results)
                             self._latest_frame = output.copy()
@@ -1316,11 +1488,8 @@ class InferencePipeline:
                     #     the preview polls get_latest_frame(), so this flag is a reliable
                     #     "someone is watching" signal
                     #   * the one-time thumbnail
-                    # Skipping also stops a gated frame from OVERWRITING the annotated
-                    # image stored by the branch above: _deliver_job reads _latest_frame
-                    # asynchronously for result_image destinations, and at 5 fps inference
-                    # against 25 fps capture, 4 of every 5 frames used to replace the drawn
-                    # output with an undrawn one before the publisher could read it.
+                    # Event annotations are generated independently from the selected
+                    # event snapshot; preview refreshes cannot change webhook images.
                     if frame is not None and (self._is_streaming
                                               or (not self._thumbnail_captured and self._thumbnail_path)):
                         with self._frame_lock:
@@ -1331,7 +1500,7 @@ class InferencePipeline:
 
                 # Process detections. Selection happens on the inference thread;
                 # actual network delivery is handed to the background publisher worker
-                # so a slow/failing webhook never blocks inference.
+                # so HTTP retries never execute on the inference thread.
                 if results is not None:
                     # Periodic maintenance + counter heartbeat
                     if self._frame_counter - self._last_cleanup_frame >= self._cleanup_interval:
@@ -1339,14 +1508,21 @@ class InferencePipeline:
                         self._last_cleanup_frame = self._frame_counter
                         with self._counter_lock:
                             unique, total = len(self._sent_person_track_ids), self._persons_sent
-                        print(f"[COUNTER] 👤 Persons delivered via webhook so far: {unique} unique "
+                        print(f"[COUNTER] 👤 Persons delivered to all event destinations so far: {unique} unique "
                               f"({total} total) | queue={self._publish_queue.qsize()}")
 
                     # Support both "detections" and "predictions" keys
-                    all_detections = json_results.get("detections", json_results.get("predictions", []))
+                    all_detections = json_results["predictions"]
 
                     now = time.time()
                     iou_jobs = []
+                    source_file, fingerprint = None, None
+                    if is_folder_source and self._should_auto_delete_images():
+                        source_file = self.source.get_current_file_path()
+                        if source_file:
+                            st = os.stat(source_file)
+                            fingerprint = [st.st_size, st.st_mtime_ns]
+                            self._file_seen[source_file] = fingerprint
                     # 1) Update candidates for every kept detection FIRST (so the
                     #    current frame is considered before deciding the best).
                     for det in all_detections:
@@ -1362,7 +1538,10 @@ class InferencePipeline:
                             self.logger.debug(f"[FILTER] Skipping {class_name} conf={confidence:.3f} < {min_conf_threshold:.3f}")
                             continue
 
-                        if det.get("track_id") is not None:
+                        if is_folder_source:
+                            iou_jobs.append({'track_key': None, 'det': det, 'frame': self._snapshot(frame),
+                                             'first_seen': now, 'captured_at': self._last_capture_wall})
+                        elif det.get("track_id") is not None:
                             self._update_track_candidate(det, frame, now)
                         else:
                             job = self._register_iou_candidate(det, frame, now)
@@ -1373,7 +1552,13 @@ class InferencePipeline:
                     #    Runs even when all_detections == [] (person left the frame).
                     ready_jobs = self._collect_ready_tracks(now)
 
-                    # 3) Enqueue jobs for the background worker (non-blocking).
+                    # 3) Preserve file ownership until all its events succeed.
+                    file_group = uuid.uuid4().hex
+                    if is_folder_source and source_file:
+                        self._file_groups[file_group] = {'remaining': len(iou_jobs), 'failed': False}
+                        for file_job in iou_jobs:
+                            file_job.update(source_file=source_file, source_fingerprint=fingerprint,
+                                            file_group=file_group, file_group_size=len(iou_jobs))
                     for job in ready_jobs + iou_jobs:
                         job['json_results'] = json_results
                         if job.get('frame') is None:
@@ -1382,8 +1567,9 @@ class InferencePipeline:
                                          f"track_id={job['det'].get('track_id')} conf={job['det'].get('confidence', 0):.3f}")
                         self._enqueue_publish_job(job)
 
-                # Auto-delete processed image if enabled
-                self._delete_current_image()
+                    # No accepted detections: an analyzed file is complete locally.
+                    if is_folder_source and not iou_jobs:
+                        self._delete_current_image()
 
         except Exception as e:
             self._error_state = str(e)
@@ -1392,6 +1578,16 @@ class InferencePipeline:
             print(f"Pipeline {self.id} ERROR: {e}")
 
         finally:
+            self._flush_and_stop_publisher()
+            if self._publisher_thread and self._publisher_thread is not threading.current_thread():
+                self._publisher_thread.join()
+            for destination in getattr(self.result_publisher, 'destinations', ()):
+                close = getattr(destination, 'close', None)
+                if close:
+                    try:
+                        close()
+                    except Exception:
+                        self.logger.warning("Failed to close publisher destination", exc_info=True)
             self._is_running = False
             if self.source:
                 self.source.stop()
@@ -1412,7 +1608,7 @@ class InferencePipeline:
             logging.getLogger(__name__).warning(
                 f"Invalid ARMYEYE_TARGET_INFERENCE_FPS={raw!r} - ignoring (inferring every frame)")
             return 0.0
-        if v < 0:
+        if not math.isfinite(v) or v < 0:
             logging.getLogger(__name__).warning(
                 f"Negative ARMYEYE_TARGET_INFERENCE_FPS={v} - ignoring (inferring every frame)")
             return 0.0
@@ -1449,9 +1645,7 @@ class InferencePipeline:
 
         Deliberately NOT a scheduler: it never queues, never sleeps and only ever considers
         the frame in hand, so a skipped frame is dropped immediately and no backlog of stale
-        frames can accumulate. `_last_inference_at` is set to the ACTUAL inference time
-        rather than advanced by a fixed step, so a stall cannot be followed by a burst of
-        catch-up inferences.
+        frames can accumulate. The schedule advances by one period and re-anchors after a stall.
         """
         if self.TARGET_INFERENCE_FPS <= 0:
             return True                                   # 0 = infer every frame
@@ -1475,6 +1669,9 @@ class InferencePipeline:
             except (TypeError, ValueError):
                 self.logger.warning(f"Invalid {key}={cfg[key]!r} (not a number) - keeping {current}")
                 return current
+            if not math.isfinite(v):
+                self.logger.warning("Non-finite %s rejected", key)
+                return current
             if lo is not None and v < lo:
                 self.logger.warning(f"Invalid {key}={v} (< {lo}) - keeping {current}")
                 return current
@@ -1493,11 +1690,13 @@ class InferencePipeline:
         self.MAX_COLLECT_SECONDS = num('max_collect_seconds', self.MAX_COLLECT_SECONDS, 0.0)
         self.TRACK_TTL_SECONDS = num('track_ttl_seconds', self.TRACK_TTL_SECONDS, 0.0)
         self.TRACK_LOST_TIMEOUT_SECONDS = num('track_lost_timeout_seconds', self.TRACK_LOST_TIMEOUT_SECONDS, 0.0)
-        self.PUBLISH_MAX_RETRIES = int(num('publish_max_retries', self.PUBLISH_MAX_RETRIES, 0))
-        self.PUBLISH_RETRY_DELAY_SECONDS = num('publish_retry_delay_seconds', self.PUBLISH_RETRY_DELAY_SECONDS, 0.0)
-        self.PUBLISH_RETRY_BACKOFF = num('publish_retry_backoff', self.PUBLISH_RETRY_BACKOFF, 1.0)
+        self.PUBLISH_MAX_RETRIES = int(num('publish_max_retries', self.PUBLISH_MAX_RETRIES, 0, 20))
+        self.PUBLISH_RETRY_DELAY_SECONDS = num('publish_retry_delay_seconds', self.PUBLISH_RETRY_DELAY_SECONDS, 0.0, 30.0)
+        self.PUBLISH_RETRY_BACKOFF = num('publish_retry_backoff', self.PUBLISH_RETRY_BACKOFF, 1.0, 10.0)
         self.PUBLISHER_SHUTDOWN_TIMEOUT_SECONDS = num('publisher_shutdown_timeout_seconds', self.PUBLISHER_SHUTDOWN_TIMEOUT_SECONDS, 0.0)
-        self.PUBLISH_QUEUE_SIZE = int(num('publish_queue_size', self.PUBLISH_QUEUE_SIZE, 1))
+        self.PUBLISH_QUEUE_SIZE = int(num('publish_queue_size', self.PUBLISH_QUEUE_SIZE, 1, 10000))
+        self.PUBLISH_QUEUE_BYTES = int(num('publish_queue_bytes', getattr(self, 'PUBLISH_QUEUE_BYTES', 64 * 1024 * 1024), 1024, 1024**3))
+        self.PUBLISH_MAX_AGE_SECONDS = num('publish_max_age_seconds', getattr(self, 'PUBLISH_MAX_AGE_SECONDS', 300), 1, 3600)
         # Capped at 1000: a target above any real camera rate means 'every frame' anyway,
         # and a typo like 5000 should not read as a meaningful setting.
         self.TARGET_INFERENCE_FPS = num('target_inference_fps', self.TARGET_INFERENCE_FPS, 0.0, 1000.0)
@@ -1505,17 +1704,25 @@ class InferencePipeline:
     def configure(self, frame_source_config, inference_engine_config, result_publisher: ResultPublisher, detection_config=None):
 
         self._frame_source_config = frame_source_config  # Store for auto-delete functionality
-        self.source = FrameSourceFactory.create(**frame_source_config)
+        from InferenceNode.capture_options import configure_ip_capture
+        self.source = configure_ip_capture(FrameSourceFactory.create(**frame_source_config), frame_source_config)
 
         self.inference_engine_config = inference_engine_config
         self.inference_engine = InferenceEngineFactory.create(**inference_engine_config)
-        self.inference_engine.load()
+        if not self.inference_engine.load():
+            self.source.stop()
+            raise RuntimeError('Inference model failed to load')
 
         self.result_publisher = result_publisher
 
         # Optional detection/publisher overrides from the pipeline config (validated)
         if detection_config:
             self._apply_detection_config(detection_config)
+
+        root = os.environ.get('ARMYEYE_ARTIFACT_ROOT')
+        if root and os.getenv('ARMYEYE_OUTBOX_ENABLED', 'true').lower() in ('1', 'true', 'yes'):
+            from InferenceNode.event_outbox import EventOutbox
+            self._outbox = EventOutbox(root, self.id)
 
         # Re-create the publish queue if the size was overridden
         self._publish_queue = queue.Queue(maxsize=self.PUBLISH_QUEUE_SIZE)
@@ -1544,6 +1751,8 @@ class InferencePipeline:
         if not self._is_initialized:
             raise RuntimeError(f"Pipeline {self.id} cannot start - not initialized. Call configure() first.")
         
+        if (self._publisher_thread and self._publisher_thread.is_alive()) or (hasattr(self, "thread") and self.thread.is_alive()):
+            raise RuntimeError("Previous pipeline workers are still stopping")
         if self._is_running:
             print(f"Pipeline {self.id} is already running")
             return
@@ -1567,7 +1776,9 @@ class InferencePipeline:
         """
         print(f"Stopping pipeline {self.id}")
         self._stop_requested = True  # Signal the run loop to stop
-        self._is_streaming = False  # Reset streaming flag when pipeline stops
+        with self._frame_lock:
+            self._viewer_count = 0
+            self._is_streaming = False  # Reset streaming flag when pipeline stops
         
         # Update thumbnail with the last received frame before stopping
         if self._latest_frame is not None and self._thumbnail_path:
@@ -1579,11 +1790,13 @@ class InferencePipeline:
             except Exception as e:
                 print(f"Pipeline {self.id}: Failed to update thumbnail with last frame: {e}")
         
+        self._candidate_stop.set()
         # Give the inference thread some time to stop gracefully
         if hasattr(self, 'thread') and self.thread and self.thread.is_alive():
             self.thread.join(timeout=5.0)  # Wait up to 5 seconds
             if self.thread.is_alive():
-                print(f"Warning: Pipeline {self.id} thread did not stop within timeout")
+                self.logger.warning("Pipeline thread is still stopping; retaining runtime ownership")
+                return
 
         # Graceful publisher shutdown: flush remaining candidates, drain the queue,
         # then stop the worker so in-flight/unique events aren't lost.
@@ -1602,54 +1815,34 @@ class InferencePipeline:
         print(f"Pipeline {self.id} stopped")
 
     def _flush_and_stop_publisher(self):
-        """Graceful publisher shutdown (spec #15):
-        1) convert remaining valid candidates into jobs,
-        2) let the queue drain for up to PUBLISHER_SHUTDOWN_TIMEOUT_SECONDS,
-        3) stop and join the worker,
-        4) log anything left undelivered."""
-        if self._publisher_thread is None or not self._publisher_thread.is_alive():
-            return
-
-        now = time.time()
-        # 1) Flush current best candidates into jobs
-        with self._tracking_lock:
-            pending_keys = list(self._track_best.keys())
-        flushed = 0
-        for track_key in pending_keys:
+        with self._shutdown_lock:
+            self._candidate_stop.set()
+            if self._candidate_thread and self._candidate_thread is not threading.current_thread():
+                self._candidate_thread.join(timeout=2)
+            if not self._publisher_thread or not self._publisher_thread.is_alive():
+                return
+            # Mark all candidates ready without discarding their selected frame.
             with self._tracking_lock:
-                entry = self._track_best.pop(track_key, None)
-                if entry is None:
-                    continue
-                self._pending_track_keys.add(track_key)
-            job = {'track_key': track_key, 'det': entry['best_det'],
-                   'frame': entry['best_frame'], 'first_seen': entry['first_seen'],
-                   'json_results': None}
-            self.logger.info(f"PIPELINE_SHUTDOWN_FLUSH pipeline_id={self.id} track_key={track_key} "
-                             f"conf={entry['best_det'].get('confidence', 0):.3f}")
-            self._enqueue_publish_job(job)
-            flushed += 1
-        if flushed:
-            print(f"Pipeline {self.id}: flushed {flushed} pending candidate(s) to the publisher on shutdown")
-
-        # 2) Drain: allow retries to complete during the shutdown window
-        self._draining = True
-        deadline = now + self.PUBLISHER_SHUTDOWN_TIMEOUT_SECONDS
-        while time.time() < deadline:
-            if self._publish_queue.empty():
-                break
-            time.sleep(0.1)
-
-        # 3) Stop and join the worker
-        self._draining = False
-        self._publisher_stop_event.set()
-        self._publisher_thread.join(timeout=max(2.0, self.PUBLISH_RETRY_DELAY_SECONDS + 1.0))
-
-        # 4) Report anything undelivered
-        leftover = self._publish_queue.qsize()
-        if leftover:
-            self.logger.warning(f"PIPELINE_SHUTDOWN_FLUSH pipeline_id={self.id} {leftover} event(s) "
-                               f"could not be delivered before shutdown")
-            print(f"Pipeline {self.id}: WARNING {leftover} event(s) undelivered at shutdown")
+                for entry in self._track_best.values():
+                    entry['last_improved'] = 0
+            for job in self._collect_ready_tracks(time.time()):
+                self._enqueue_publish_job(job)
+            deadline = time.monotonic() + self.PUBLISHER_SHUTDOWN_TIMEOUT_SECONDS
+            while time.monotonic() < deadline:
+                with self._work_lock:
+                    busy = self._inflight or self._retry_jobs or not self._publish_queue.empty()
+                if not busy:
+                    break
+                time.sleep(.05)
+            self._publisher_stop_event.set()
+            self._publisher_thread.join(timeout=2)
+            with self._work_lock:
+                remaining = self._inflight + len(self._retry_jobs) + self._publish_queue.qsize()
+            if remaining:
+                self.logger.warning('%s unfinished events at shutdown; durable outbox=%s', remaining, bool(self._outbox))
+            self._snapshot_source = self._snapshot_frame = None
+            with self._preview_lock:
+                self._preview_cache.clear()
 
     def get_publish_stats(self) -> Dict[str, Any]:
         """Snapshot of confirmed-delivery counters (thread-safe)."""
@@ -1664,7 +1857,10 @@ class InferencePipeline:
                 'publish_rate_limited': self._publish_rate_limited,
                 'queued_events': self._queued_events,
                 'dropped_events': self._dropped_events,
-                'queue_size': self._publish_queue.qsize(),
+                'queue_size': self._publish_queue.qsize() + len(self._retry_jobs),
+                'inflight_events': self._inflight,
+                'queue_bytes': self._queue_bytes,
+                'durable_failed_events': self._durable_failures,
             }
 
     def get_latest_frame(self):
@@ -1672,15 +1868,37 @@ class InferencePipeline:
         with self._frame_lock:
             return self._latest_frame.copy() if self._latest_frame is not None else None
 
+    def get_preview_jpeg(self, width=640, quality=70):
+        # Serialize one encode per frame/quality across viewers. Producer only swaps arrays.
+        with self._preview_lock:
+            with self._frame_lock:
+                frame = self._latest_frame
+            if frame is None:
+                return None
+            key = (width, quality)
+            cached = self._preview_cache.get(key)
+            if cached and cached[0] is frame:
+                return cached[1]
+            h, w = frame.shape[:2]
+            preview = cv2.resize(frame, (width, max(1, int(h * width / w))),
+                                 interpolation=cv2.INTER_AREA) if w > width else frame
+            ok, buf = cv2.imencode('.jpg', preview, [cv2.IMWRITE_JPEG_QUALITY, quality,
+                                                    cv2.IMWRITE_JPEG_OPTIMIZE, 1])
+            if not ok:
+                return None
+            encoded = buf.tobytes()
+            self._preview_cache[key] = (frame, encoded)
+            return encoded
+
     def start_streaming(self):
-        """Enable streaming flag to indicate frames should be drawn with results"""
-        self._is_streaming = True
-        print(f"Pipeline {self.id}: Streaming enabled")
+        with self._frame_lock:
+            self._viewer_count += 1
+            self._is_streaming = self._viewer_count > 0
 
     def stop_streaming(self):
-        """Disable streaming flag to optimize performance when not streaming"""
-        self._is_streaming = False
-        print(f"Pipeline {self.id}: Streaming disabled")
+        with self._frame_lock:
+            self._viewer_count = max(0, self._viewer_count - 1)
+            self._is_streaming = self._viewer_count > 0
 
     def is_streaming(self) -> bool:
         """Check if streaming is currently active"""

@@ -215,11 +215,21 @@ class GetiEngine(BaseInferenceEngine):
                 self.logger.warning(f"Failed to convert prediction to dict: {e}")
                 predictions_dict = str(results)
         
-        json_results = {
-            "predictions": predictions_dict,
-            "original_image": None
-        }
-        
+        predictions = []
+        if isinstance(predictions_dict, dict):
+            for annotation in predictions_dict.get('annotations', []):
+                shape = annotation.get('shape', {})
+                if not all(k in shape for k in ('x', 'y', 'width', 'height')):
+                    raise ValueError('GETI annotation is not a supported rectangle')
+                x, y, w, h = (float(shape[k]) for k in ('x', 'y', 'width', 'height'))
+                for label in annotation.get('labels', []):
+                    predictions.append({'class_name': label['name'],
+                        'confidence': float(label.get('probability', label.get('confidence', 0))),
+                        'bbox': [x, y, x + w, y + h], 'bbox_format': 'xyxy'})
+        elif predictions_dict is not None:
+            raise ValueError('GETI prediction could not be serialized')
+        json_results = {'task_type': 'detection', 'predictions': predictions,
+                        'num_detections': len(predictions)}
 
         if output_format == "dict":
             return json_results

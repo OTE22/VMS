@@ -20,6 +20,7 @@ class ResultPublisher:
         # Thread pool for non-blocking publishing
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="ResultPublisher")
         self._shutdown = False
+        self._slots = threading.BoundedSemaphore(max_workers * 4)
     
     def add(self, destination: BaseResultDestination) -> str:
         """Add a result destination and return its ID"""
@@ -71,12 +72,14 @@ class ResultPublisher:
     def do_any_destinations_need_image(self) -> bool:
         """Check if any destination needs image data"""
         with self._lock:
-            return any(getattr(dest, 'enabled', True) and dest.include_image_data for dest in self.destinations)
+            return any(getattr(dest, 'enabled', True) and not getattr(dest, 'is_paused', False)
+                       and getattr(dest, 'is_configured', True) and dest.include_image_data for dest in self.destinations)
 
     def do_any_destinations_need_result_image(self) -> bool:
         """Check if any destination needs result image data"""
         with self._lock:
-            return any(getattr(dest, 'enabled', True) and dest.include_result_image for dest in self.destinations)
+            return any(getattr(dest, 'enabled', True) and not getattr(dest, 'is_paused', False)
+                       and getattr(dest, 'is_configured', True) and dest.include_result_image for dest in self.destinations)
 
     def publish(self, data: Dict[str, Any], 
                 original_image: Optional[np.ndarray] = None, 
@@ -86,22 +89,13 @@ class ResultPublisher:
             self.logger.warning("Publisher is shutting down, ignoring publish request")
             return
         
-        # Create a deep copy of data to avoid race conditions
-        dest_data = copy.deepcopy(data)
-        
-        # Encode image once if any destination needs it
-        encoded_image = None
-        if original_image is not None:
-            success, buffer = cv2.imencode('.jpg', original_image)
-            if success:
-                encoded_image = base64.b64encode(buffer.tobytes()).decode('utf-8')
-
-        # Similarly encode result image if needed
-        encoded_result_image = None
-        if result_image is not None:
-            success, buffer = cv2.imencode('.jpg', result_image)
-            if success:
-                encoded_result_image = base64.b64encode(buffer.tobytes()).decode('utf-8')
+        try:
+            images = self.prepare_images(original_image, result_image)
+        except (ValueError, cv2.error):
+            self.logger.error('Legacy event rejected: required image encoding failed')
+            return
+        encoded_image = images.get('image')
+        encoded_result_image = images.get('result_image')
 
         # Submit publishing tasks to thread pool
         with self._lock:
@@ -110,6 +104,8 @@ class ResultPublisher:
                                   if getattr(dest, 'enabled', True) and not getattr(dest, 'is_paused', False)]
         
         for destination in enabled_destinations:
+            # Each destination owns its payload; image flags cannot leak.
+            dest_data = copy.deepcopy(data)
             # Prepare data for this destination
             if encoded_image is not None and destination.include_image_data:
                 dest_data["image"] = encoded_image
@@ -118,15 +114,23 @@ class ResultPublisher:
                 dest_data["result_image"] = encoded_result_image
             
             # Submit to thread pool
-            print(f"submitting dest_data {dest_data.keys()} to {destination.__class__.__name__}")
-            future = self._executor.submit(self._publish_to_destination, destination, dest_data)
+            self.logger.debug("Submitting event to %s", destination.__class__.__name__)
+            if not self._slots.acquire(blocking=False):
+                self.logger.warning("Legacy publisher saturated; event not submitted")
+                continue
+            try:
+                future = self._executor.submit(self._publish_to_destination, destination, dest_data)
+            except Exception:
+                self._slots.release()
+                raise
+            future.add_done_callback(lambda _: self._slots.release())
             
             # Optionally add a callback for logging results
             def log_result(fut, dest_name=destination.__class__.__name__):
                 try:
                     success = fut.result()
                     if success:
-                        print(f"[PUBLISH] ✓ Successfully sent POST to {dest_name}")
+                        self.logger.debug("Destination accepted event: %s", dest_name)
                     else:
                         self.logger.debug(f"Failed to publish to {dest_name}")
                         print(f"[PUBLISH] ✗ Failed to publish to {dest_name}")
@@ -136,9 +140,32 @@ class ResultPublisher:
             
             future.add_done_callback(log_result)
     
+    def destination_ids(self):
+        with self._lock:
+            return [str(getattr(d, '_id', d.__class__.__name__)) for d in self.destinations
+                    if d.enabled and not getattr(d, 'is_paused', False) and getattr(d, 'is_configured', True)]
+
+    @staticmethod
+    def encode_image(frame):
+        if frame is None:
+            raise ValueError('Required event image is missing')
+        ok, buffer = cv2.imencode('.jpg', frame)
+        if not ok:
+            raise ValueError('Event JPEG encoding failed')
+        return base64.b64encode(buffer.tobytes()).decode('ascii')
+
+    def prepare_images(self, original_image=None, result_image=None):
+        images = {}
+        if self.do_any_destinations_need_image():
+            images['image'] = self.encode_image(original_image)
+        if self.do_any_destinations_need_result_image():
+            images['result_image'] = self.encode_image(result_image)
+        return images
+
     def publish_sync(self, data: Dict[str, Any],
                      original_image: Optional[np.ndarray] = None,
-                     result_image: Optional[np.ndarray] = None) -> Dict[str, Any]:
+                     result_image: Optional[np.ndarray] = None, *, prepared_images=None,
+                     destination_ids=None) -> Dict[str, Any]:
         """Publish data to all enabled destinations SYNCHRONOUSLY and return a
         structured, aggregated delivery result.
 
@@ -149,7 +176,7 @@ class ResultPublisher:
 
         Returns:
             {
-              "success": bool,   # True if at least one enabled destination accepted
+              "success": bool,   # True if all selected destinations accepted
               "successful_destinations": [id, ...],
               "failed_destinations": [id, ...],       # retryable failures only
               "terminal_destinations": [id, ...],     # 400/413/422-class: THIS delivery
@@ -181,38 +208,43 @@ class ResultPublisher:
             self.logger.warning("Publisher is shutting down, ignoring publish_sync request")
             return result
 
-        # Deep copy so per-destination image injection can't race across threads
         dest_data = copy.deepcopy(data)
-
-        # Encode images once, reused across destinations that want them
-        encoded_image = None
-        if original_image is not None:
-            ok, buffer = cv2.imencode('.jpg', original_image)
-            if ok:
-                encoded_image = base64.b64encode(buffer.tobytes()).decode('utf-8')
-
-        encoded_result_image = None
-        if result_image is not None:
-            ok, buffer = cv2.imencode('.jpg', result_image)
-            if ok:
-                encoded_result_image = base64.b64encode(buffer.tobytes()).decode('utf-8')
-
         with self._lock:
             destinations = list(self.destinations)
+        images = prepared_images
+        image_error = None
+        # Pipeline supplies immutable cached encodings. Legacy callers encode only once.
+        if images is None:
+            try:
+                images = self.prepare_images(original_image, result_image)
+            except (ValueError, cv2.error) as exc:
+                images, image_error = {}, str(exc)
 
         for destination in destinations:
             dest_id = str(getattr(destination, '_id', destination.__class__.__name__))
 
+            if destination_ids is not None and dest_id not in destination_ids:
+                continue
             if not getattr(destination, 'enabled', True) or getattr(destination, 'is_paused', False):
                 result["skipped_destinations"].append(dest_id)
                 continue
 
             # Per-destination payload with only the images it asked for
             payload = dict(dest_data)
-            if encoded_image is not None and destination.include_image_data:
-                payload["image"] = encoded_image
-            if encoded_result_image is not None and destination.include_result_image:
-                payload["result_image"] = encoded_result_image
+            missing = False
+            for key, needed in (('image', destination.include_image_data),
+                                ('result_image', destination.include_result_image)):
+                payload.pop(key, None)
+                if needed:
+                    if not images.get(key):
+                        missing = True
+                    else:
+                        payload[key] = images[key]
+            if missing:
+                result['terminal_destinations'].append(dest_id)
+                result['errors'][dest_id] = image_error or 'Required event image unavailable'
+                result['attempted'] += 1
+                continue
 
             result["attempted"] += 1
             try:
@@ -248,8 +280,10 @@ class ResultPublisher:
             if hint and (result["retry_after"] is None or hint > result["retry_after"]):
                 result["retry_after"] = hint
 
-        # Success = at least one enabled destination accepted the event
-        result["success"] = len(result["successful_destinations"]) >= 1
+        # A single attempt is complete only when all selected destinations accepted.
+        result["success"] = bool(result["successful_destinations"]) and not any(
+            result[k] for k in ("failed_destinations", "terminal_destinations",
+                               "rate_limited_destinations", "skipped_destinations"))
         return result
 
     def get_destinations(self) -> List[str]:

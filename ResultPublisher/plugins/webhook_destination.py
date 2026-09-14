@@ -3,6 +3,8 @@ import os
 import re
 import socket
 import time
+import threading
+import math
 import logging
 from email.utils import parsedate_to_datetime
 from typing import Any, Dict, Optional
@@ -138,7 +140,7 @@ def _parse_retry_after(value: Optional[str]) -> Optional[float]:
         if when.tzinfo is None:
             when = when.replace(tzinfo=timezone.utc)
         seconds = (when - datetime.now(timezone.utc)).total_seconds()
-    if seconds < 0:
+    if not math.isfinite(seconds) or seconds < 0:
         return None
     return min(seconds, _RETRY_AFTER_MAX_SECONDS)
 
@@ -351,6 +353,9 @@ class WebhookDestination(BaseResultDestination):
         # Auth state (token is resolved in configure(); never logged/stored in headers)
         self._auth_token: Optional[str] = None
         self._auth_required: bool = True
+        self._sessions = threading.local()
+        self._session_lock = threading.Lock()
+        self._open_sessions = []
 
     def effective_destination(self) -> Dict[str, Optional[str]]:
         """The destination deliveries ACTUALLY go to - never the stored legacy
@@ -427,7 +432,9 @@ class WebhookDestination(BaseResultDestination):
         self.url_template = url  # Store original template
         self.url = url
         self.headers = headers or {"Content-Type": "application/json"}
-        self.timeout = timeout
+        if not math.isfinite(float(timeout)) or not 0 < float(timeout) <= 300:
+            raise ValueError("Webhook timeout must be in (0, 300] seconds")
+        self.timeout = float(timeout)
 
         # Never accept a token via configured headers: strip any Authorization header
         # (case-insensitive). Log only that it was rejected - never the headers object.
@@ -565,7 +572,13 @@ class WebhookDestination(BaseResultDestination):
                        f"path={parsed.path}")
             started = time.perf_counter()
             try:
-                response = requests.post(
+                session = getattr(self._sessions, 'session', None)
+                if session is None:
+                    session = requests.Session()
+                    self._sessions.session = session
+                    with self._session_lock:
+                        self._open_sessions.append(session)
+                response = session.post(
                     resolved_url,
                     json=data,
                     headers=req_headers,
@@ -634,5 +647,9 @@ class WebhookDestination(BaseResultDestination):
     def close(self) -> None:
         """Close the webhook connection"""
         self.stop_queue()
+        with self._session_lock:
+            for session in self._open_sessions:
+                session.close()
+            self._open_sessions.clear()
         eff = self.effective_destination()
         self.logger.info(f"Webhook connection closed: mode={eff['mode']} url={eff['url']}")

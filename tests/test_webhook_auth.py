@@ -247,7 +247,7 @@ def test_warn_only_for_non_local_http(monkeypatch, caplog):
         return _Resp()
 
     import requests
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(requests.Session, "post", lambda self, *a, **kw: fake_post(*a, **kw))
 
     dest = WebhookDestination()
     dest.configure(url="http://example.com/api/webhooks/detections", timeout=5)

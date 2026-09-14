@@ -255,7 +255,7 @@ class SimpleCustomEngine(BaseInferenceEngine):
         }
         
         if output_format == "dict":
-            return json.dumps(json_results, default=str)
+            return json_results
         else:
             return json.dumps(json_results, default=str)
 
