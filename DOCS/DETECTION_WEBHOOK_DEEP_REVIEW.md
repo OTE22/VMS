@@ -1,3 +1,5 @@
+> Historical review of the pre-fix code. See [implemented fixes and validation](DELIVERY_TRACKING_FIXES.md) for the current status.
+
 # Detection and webhook code review
 
 Reviewed 2026-09-14 against workspace commit `5530ff8` and the rebuilt VMS container. This is a sender-side code review, with synthetic reproductions and local HTTP stub tests. It is not a camera load test or a review of the external receiver. No production configuration or application code was changed.

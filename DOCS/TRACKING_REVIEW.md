@@ -1,3 +1,5 @@
+> Historical review of the pre-fix code. See [implemented fixes and validation](DELIVERY_TRACKING_FIXES.md) for the current status.
+
 # Tracking integration review
 
 Reviewed 2026-09-14 using the workspace and installed Ultralytics **8.4.143** source. No tracker settings or application code were changed. Synthetic checks used the actual installed tracker classes; no model downloads, cameras, or external webhook requests were used.

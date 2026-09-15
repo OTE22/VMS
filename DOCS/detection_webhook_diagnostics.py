@@ -1,3 +1,4 @@
+# Historical pre-fix reproductions; current behavioral coverage is in tests/test_event_delivery_regressions.py.
 """Diagnostic reproductions: passing tests confirm current problematic behavior.
 No cameras, production database, or external HTTP destinations are used.
 """

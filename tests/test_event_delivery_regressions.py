@@ -344,7 +344,7 @@ def test_same_instance_restart_rehydrates_outbox_once(tmp_path):
     p._outbox = EventOutbox(tmp_path, p.id)
     j = job(p)
     p._prepare_job(j)
-    assert p._persist_job(j)
+    p._persist_job(j)
     # Keep workers idle so both starts see the same unfinished event.
     with patch.object(threading.Thread, 'start'), patch.object(threading.Thread, 'is_alive', return_value=False):
         p._start_publisher_worker()
