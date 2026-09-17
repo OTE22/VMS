@@ -21,7 +21,7 @@ from conftest import REPO
 
 # The current migration head. Bump when a migration is added - the point of these
 # tests is that upgrade/downgrade round-trips cleanly, not which revision is newest.
-HEAD = "0006_pipeline_node_assignment"
+HEAD = "0007_reference_integrity"
 
 
 def _alembic(pg, *args):

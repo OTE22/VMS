@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (Column, Integer, String, Text, Boolean, DateTime, BigInteger,
-                        ForeignKey, Index, UniqueConstraint, CheckConstraint)
+                        ForeignKey, ForeignKeyConstraint, Index, UniqueConstraint, CheckConstraint)
 from sqlalchemy.types import JSON
 
 from .auth.models import Base  # shared metadata -> one Alembic history
@@ -79,6 +79,14 @@ class Pipeline(Base):
         Index("idx_pipelines_owner", "owner_id"),
         Index("idx_pipelines_status", "status"),
         Index("idx_pipelines_model_id", "model_id"),
+        # PostgreSQL migrations enforce references; SQLite fixtures intentionally use
+        # lightweight configs without seeded registry models.
+        ForeignKeyConstraint(["model_id"], ["models.model_id"],
+                             name="fk_pipelines_model", ondelete="RESTRICT").ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "(config->'model'->>'id') IS NULL OR "
+            "(model_id IS NOT NULL AND config->'model'->>'id' = model_id)",
+            name="ck_pipelines_model_ref_consistent").ddl_if(dialect="postgresql"),
     )
 
 
@@ -183,6 +191,7 @@ class ModelRepresentation(Base):
 
     __table_args__ = (
         Index("idx_model_repr_model", "model_id"),
+        UniqueConstraint("id", "model_id", name="uq_model_repr_id_model"),
         CheckConstraint(_in("status", STATUS_VALUES), name="ck_model_repr_status"),
         CheckConstraint(_in("validation_status", VALIDATION_VALUES), name="ck_model_repr_validation_status"),
         CheckConstraint(_in("kind", KIND_VALUES), name="ck_model_repr_kind"),
@@ -219,6 +228,10 @@ class ModelArtifact(Base):
         Index("uq_model_artifacts_path", "relative_path", unique=True),
         Index("idx_model_artifacts_model", "model_id"),
         Index("idx_model_artifacts_repr", "representation_id"),
+        # Retain model_id for existing callers, but it must match the representation.
+        ForeignKeyConstraint(["representation_id", "model_id"],
+                             ["model_representations.id", "model_representations.model_id"],
+                             name="fk_artifact_representation_model", ondelete="CASCADE"),
         CheckConstraint(_in("status", STATUS_VALUES), name="ck_model_artifacts_status"),
         CheckConstraint(_in("validation_status", VALIDATION_VALUES), name="ck_model_artifacts_validation_status"),
         CheckConstraint(_SHA256_CHECK, name="ck_model_artifacts_sha256"),

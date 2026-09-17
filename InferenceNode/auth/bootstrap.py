@@ -91,6 +91,10 @@ def bootstrap_database(legacy_root: Optional[str] = None) -> None:
             _alembic_upgrade_head(legacy_root)
             logger.info("ArmyEye DB migrations applied (alembic upgrade head)")
         except Exception as e:
+            if auth_db.is_postgres():
+                # create_all cannot repair constraints on existing tables.
+                # Never report a failed production migration as successful.
+                raise
             # Dev/test fallback: create tables directly from metadata so a broken
             # alembic setup never hard-blocks startup. Production uses migrations.
             logger.warning(f"Alembic upgrade failed ({e}); falling back to create_all")

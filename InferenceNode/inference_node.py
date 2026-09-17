@@ -3405,6 +3405,16 @@ class InferenceNode:
                     self.logger.error(f"Pipeline {pipeline_id} not found for thumbnail generation")
                     return jsonify({'error': 'Pipeline not found'}), 404
                 
+                active = self.pipeline_manager.active_pipelines.get(pipeline_id, {})
+                instance = active.get('pipeline_instance')
+                if instance is None or instance.get_latest_frame() is None:
+                    return jsonify({
+                        'success': False,
+                        'error': 'No live frame is available. Start the pipeline and wait for a frame before generating a new thumbnail.',
+                        'has_thumbnail': self.pipeline_manager.has_pipeline_thumbnail(pipeline_id),
+                        'pipeline_id': pipeline_id,
+                    }), 409
+
                 self.logger.info(f"Generating fresh thumbnail for pipeline {pipeline_id}")
                 
                 # Generate thumbnail - this should capture the current frame

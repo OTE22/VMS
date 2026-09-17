@@ -10,6 +10,7 @@ import math
 import heapq
 import itertools
 import copy
+from datetime import datetime, timezone
 import cv2
 from typing import Dict, Any, Optional
 from collections import defaultdict
@@ -448,6 +449,12 @@ class InferencePipeline:
         if isinstance(job.get('iou_key'), list):
             job['iou_key'] = (job['iou_key'][0], tuple(job['iou_key'][1]))
         if 'payload' in job:
+            # Older durable outbox records contain Unix seconds. Preserve the
+            # original capture instant and event identity when replaying them.
+            captured_at = job['payload'].get('captured_at')
+            if isinstance(captured_at, (int, float)) and not isinstance(captured_at, bool):
+                job['payload']['captured_at'] = datetime.fromtimestamp(
+                    captured_at, timezone.utc).isoformat().replace('+00:00', 'Z')
             return
         frame = job.get('frame')
         annotated = None
@@ -461,7 +468,11 @@ class InferencePipeline:
                         (x1, max(15, y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, .5, (0, 255, 0), 1)
         job['images'] = self.result_publisher.prepare_images(frame, annotated)
         job['payload'] = self._build_payload(job['det'], job.get('json_results'))
-        job['payload']['captured_at'] = job.get('captured_at', job.get('first_seen', time.time()))
+        captured_at = job.get('captured_at')
+        if captured_at is None:
+            captured_at = job.get('first_seen', time.time())
+        job['payload']['captured_at'] = datetime.fromtimestamp(
+            captured_at, timezone.utc).isoformat().replace('+00:00', 'Z')
         job['payload']['capture_clock'] = 'application_read'
         job['targets'] = self.result_publisher.destination_ids()
         job['accepted'] = []
@@ -1194,7 +1205,7 @@ class InferencePipeline:
             return False
         try:
             try:
-                self.source.stop()          # release the old handle before reopening
+                self._disconnect_source()          # release the old handle before reopening
             except Exception:
                 pass
             self.source.connect()
@@ -1311,6 +1322,18 @@ class InferencePipeline:
             except Exception as e:
                 print(f"Pipeline {self.id}: Failed to delete thumbnail: {e}")
    
+    def _disconnect_source(self):
+        """Release modern frame sources, retaining compatibility with older adapters."""
+        source = getattr(self, 'source', None)
+        if source is None:
+            return
+        disconnect = getattr(source, 'disconnect', None)
+        if not callable(disconnect):
+            disconnect = getattr(source, 'stop', None)
+        if not callable(disconnect):
+            raise TypeError('Frame source provides neither disconnect() nor stop()')
+        return disconnect()
+
     def run(self):
         """Main pipeline execution loop"""
         self.logger.info(f"Starting pipeline run loop")
@@ -1590,7 +1613,7 @@ class InferencePipeline:
                         self.logger.warning("Failed to close publisher destination", exc_info=True)
             self._is_running = False
             if self.source:
-                self.source.stop()
+                self._disconnect_source()
             self.logger.info("Pipeline stopped")
             print(f"Pipeline {self.id}: Stopped")
 
@@ -1710,7 +1733,7 @@ class InferencePipeline:
         self.inference_engine_config = inference_engine_config
         self.inference_engine = InferenceEngineFactory.create(**inference_engine_config)
         if not self.inference_engine.load():
-            self.source.stop()
+            self._disconnect_source()
             raise RuntimeError('Inference model failed to load')
 
         self.result_publisher = result_publisher
@@ -1805,7 +1828,7 @@ class InferencePipeline:
         # Ensure source is stopped
         if hasattr(self, 'source') and self.source:
             try:
-                self.source.stop()
+                self._disconnect_source()
             except Exception as e:
                 print(f"Error stopping source: {e}")
 

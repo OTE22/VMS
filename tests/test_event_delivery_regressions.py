@@ -3,6 +3,7 @@ import json
 import logging
 import threading
 import time
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -56,6 +57,44 @@ def job(p, track=7):
     d = detection(track)
     return dict(det=d, track_key=p._make_track_key(d), first_seen=time.time(),
                 frame=np.zeros((12, 12, 3), dtype=np.uint8))
+
+
+@pytest.mark.parametrize('capture', [0, 1789554600.125, None])
+def test_capture_time_is_timezone_aware_and_preserved_across_retries(capture):
+    destination = Destination('d', ('failed', 'success'))
+    p = pipeline(destination)
+    j = job(p)
+    j['captured_at'] = capture
+    expected = j['first_seen'] if capture is None else capture
+    p._deliver_job(j)
+    assert len(destination.payloads) == 2
+    for payload in destination.payloads:
+        stamp = datetime.fromisoformat(payload['captured_at'].replace('Z', '+00:00'))
+        assert stamp.tzinfo == timezone.utc
+        assert stamp.timestamp() == pytest.approx(expected, abs=0.000001, rel=0)
+    assert destination.payloads[0]['captured_at'] == destination.payloads[1]['captured_at']
+    assert destination.payloads[0]['event_id'] == destination.payloads[1]['event_id']
+
+
+def test_legacy_outbox_capture_time_is_normalized_without_rebuilding_event(tmp_path):
+    p = pipeline(Destination('d'))
+    p._outbox = EventOutbox(tmp_path, p.id)
+    j = job(p)
+    p._prepare_job(j)
+    j['payload']['captured_at'] = 1789554600.125
+    original_id = j['payload']['event_id']
+    j['accepted'] = ['already-delivered']
+    p._persist_job(j)
+    restored = p._outbox.records()[0]['job']
+    p._prepare_job(restored)
+    stamp = datetime.fromisoformat(restored['payload']['captured_at'].replace('Z', '+00:00'))
+    assert stamp.timestamp() == 1789554600.125
+    assert stamp.tzinfo == timezone.utc
+    assert restored['payload']['event_id'] == original_id
+    assert restored['accepted'] == ['already-delivered']
+    payload = dict(restored['payload'])
+    p._prepare_job(restored)
+    assert restored['payload'] == payload
 
 
 def test_partial_success_retries_only_failed_destination():
