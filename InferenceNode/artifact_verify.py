@@ -57,10 +57,20 @@ def verify_secrets() -> Dict[str, Any]:
         from . import node_settings_store as nss
         from . import config_secrets
         out = {"keys_available": config_secrets.keys_available(), "publishers_undecryptable": [],
-               "telemetry_undecryptable": False}
+               "telemetry_undecryptable": False, "pipelines_undecryptable": []}
         for row in pst.list_publishers(runtime=True):
             if not row.get("secrets_ok", True):
                 out["publishers_undecryptable"].append(row["id"])
+        from sqlalchemy import select
+        from .auth.db import get_session
+        from .data_models import Pipeline
+        from .pipeline_secrets import decrypt
+        with get_session() as session:
+            for pipeline in session.execute(select(Pipeline)).scalars():
+                try:
+                    decrypt(pipeline.config or {})
+                except config_secrets.SecretsUnavailable:
+                    out['pipelines_undecryptable'].append(pipeline.pipeline_id)
         tel = nss.get_setting(nss.KEY_TELEMETRY, runtime=True) or {}
         if tel.get("_secrets_ok") is False:
             out["telemetry_undecryptable"] = True
@@ -124,7 +134,7 @@ def summarize(report: Dict[str, Any]) -> Dict[str, Any]:
         problems.append(f"models: {_count(m.get('representations_degraded'))} degraded representation(s)")
     if _count(m.get("row_no_artifact")):
         problems.append(f"models: {_count(m.get('row_no_artifact'))} row(s) with unresolvable path")
-    if _count(sec.get("publishers_undecryptable")) or sec.get("telemetry_undecryptable"):
+    if _count(sec.get("publishers_undecryptable")) or sec.get("telemetry_undecryptable") or _count(sec.get("pipelines_undecryptable")):
         problems.append("secrets: undecryptable credentials present (encryption key missing/wrong)")
     if _count(refs.get("divergent")):
         problems.append(f"pipelines: {_count(refs.get('divergent'))} model reference(s) diverged")

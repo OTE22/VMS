@@ -296,6 +296,7 @@ class Publisher(Base):
     id = Column(Integer, primary_key=True)
     publisher_id = Column(String(36), nullable=False)
     name = Column(String(255), nullable=True)
+    description = Column(Text, nullable=True)
     type = Column(String(64), nullable=False)
     kind = Column(String(32), nullable=False, default="favorite")     # favorite | node_destination
     enabled = Column(Boolean, nullable=False, default=True)

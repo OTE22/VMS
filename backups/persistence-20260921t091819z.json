@@ -1,0 +1,6 @@
+{
+  "rollback_image": "armyeye-vms:before-persistence-20260921t091819z",
+  "release_image": "armyeye-vms:persistence-20260921t091819z",
+  "database_backup": "/home/itdirect-ai/Desktop/VMS/backups/pre-persistence-20260921t091819z.dump",
+  "previous_image_id": "sha256:85b5e5c237f14acce5fd905e193165bdf31032f2cecdba3f48ce02f3a27a36f2"
+}

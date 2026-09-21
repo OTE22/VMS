@@ -64,7 +64,7 @@
                     </div>
                     
                     <h6 class="mt-4">Response Format</h6>
-                    <p>All API endpoints return JSON responses with the following structure:</p>
+                    <p>Response fields depend on the endpoint. Check the HTTP status before reading the body. JSON errors usually contain an error field; streams and exports may return other formats. Example:</p>
                     <pre><code>{
   "success": true,
   "data": { ... },
@@ -231,20 +231,20 @@ description: "Optional model description"</code></pre>
                         <p>List all configured pipelines and their status.</p>
                         <h6>Response Example:</h6>
                         <pre><code>{
-  "pipelines": {
-    "pipeline_001": {
+  "pipelines": [
+    {
+      "id": "pipeline_001",
       "name": "Webcam Detection",
-      "frame_source": "webcam",
-      "model_id": "model_abc123",
       "status": "running"
     }
-  }
+  ],
+  "stats": {"total": 1, "active": 1}
 }</code></pre>
                     </div>
 
                     <div class="endpoint-item mb-4">
                         <div class="d-flex justify-content-between align-items-center mb-2">
-                            <h6><span class="badge bg-warning">POST</span> /api/pipelines</h6>
+                            <h6><span class="badge bg-warning">POST</span> /api/pipeline/create</h6>
                             <button class="btn btn-sm btn-outline-primary" onclick="showCreatePipelineForm()">
                                 <i class="fas fa-plus me-1"></i>Create Pipeline
                             </button>
@@ -254,15 +254,20 @@ description: "Optional model description"</code></pre>
                         <pre><code>{
   "name": "Webcam Detection",
   "frame_source": {
-    "type": "webcam",
-    "device_id": 0
+    "capture_type": "webcam",
+    "config": {"source": 0}
   },
-  "model_id": "model_abc123",
+  "model": {
+    "id": "model_abc123",
+    "engine_type": "ultralytics",
+    "device": "cpu"
+  },
   "destinations": [
     {
       "type": "mqtt",
       "config": {
-        "broker": "localhost:1883",
+        "server": "localhost",
+        "port": 1883,
         "topic": "detections"
       }
     }
@@ -272,8 +277,8 @@ description: "Optional model description"</code></pre>
 
                     <div class="endpoint-item mb-4">
                         <div class="d-flex justify-content-between align-items-center mb-2">
-                            <h6><span class="badge bg-success">POST</span> /api/pipelines/{pipeline_id}/start</h6>
-                            <button class="btn btn-sm btn-outline-success" onclick="testEndpoint('/api/pipelines/pipeline_001/start', 'POST')">
+                            <h6><span class="badge bg-success">POST</span> /api/pipeline/{pipeline_id}/start</h6>
+                            <button class="btn btn-sm btn-outline-success" onclick="testEndpoint('/api/pipeline/pipeline_001/start', 'POST')">
                                 <i class="fas fa-play me-1"></i>Start
                             </button>
                         </div>
@@ -282,8 +287,8 @@ description: "Optional model description"</code></pre>
 
                     <div class="endpoint-item mb-4">
                         <div class="d-flex justify-content-between align-items-center mb-2">
-                            <h6><span class="badge bg-danger">POST</span> /api/pipelines/{pipeline_id}/stop</h6>
-                            <button class="btn btn-sm btn-outline-danger" onclick="testEndpoint('/api/pipelines/pipeline_001/stop', 'POST')">
+                            <h6><span class="badge bg-danger">POST</span> /api/pipeline/{pipeline_id}/stop</h6>
+                            <button class="btn btn-sm btn-outline-danger" onclick="testEndpoint('/api/pipeline/pipeline_001/stop', 'POST')">
                                 <i class="fas fa-stop me-1"></i>Stop
                             </button>
                         </div>
@@ -292,8 +297,8 @@ description: "Optional model description"</code></pre>
 
                     <div class="endpoint-item mb-4">
                         <div class="d-flex justify-content-between align-items-center mb-2">
-                            <h6><span class="badge bg-danger">DELETE</span> /api/pipelines/{pipeline_id}</h6>
-                            <button class="btn btn-sm btn-outline-danger" onclick="testEndpoint('/api/pipelines/pipeline_001', 'DELETE')">
+                            <h6><span class="badge bg-danger">DELETE</span> /api/pipeline/{pipeline_id}</h6>
+                            <button class="btn btn-sm btn-outline-danger" onclick="testEndpoint('/api/pipeline/pipeline_001', 'DELETE')">
                                 <i class="fas fa-trash me-1"></i>Delete
                             </button>
                         </div>
@@ -429,7 +434,8 @@ description: "Optional model description"</code></pre>
                         <pre><code>{
   "enabled": true,
   "publish_interval": 30,
-  "mqtt_broker": "localhost:1883",
+  "mqtt_server": "localhost",
+  "mqtt_port": 1883,
   "mqtt_topic": "infernode/telemetry"
 }</code></pre>
                     </div>
@@ -471,12 +477,12 @@ description: "Optional model description"</code></pre>
 
                     <div class="endpoint-item mb-4">
                         <div class="d-flex justify-content-between align-items-center mb-2">
-                            <h6><span class="badge bg-warning">POST</span> /api/discovery/announce</h6>
-                            <button class="btn btn-sm btn-outline-primary" onclick="testEndpoint('/api/discovery/announce', 'POST')">
-                                <i class="fas fa-bullhorn me-1"></i>Announce
+                            <h6><span class="badge bg-warning">POST</span> /api/discovery/nodes/refresh</h6>
+                            <button class="btn btn-sm btn-outline-primary" onclick="testEndpoint('/api/discovery/nodes/refresh', 'POST')">
+                                <i class="fas fa-bullhorn me-1"></i>Refresh
                             </button>
                         </div>
-                        <p>Broadcast node presence to the network for discovery by other nodes.</p>
+                        <p>Probe discovered nodes and return the refreshed node list.</p>
                     </div>
                 </div>
             </div>
@@ -514,7 +520,7 @@ async function testEndpoint(endpoint, method = 'GET', body = null) {
     // Add loading indicator
     const loadingHtml = `
         <div class="mb-2">
-            <strong>${method} ${endpoint}</strong>
+            <strong>${esc(method)} ${esc(endpoint)}</strong>
             <div class="spinner-border spinner-border-sm ms-2" role="status"></div>
         </div>
     `;
@@ -541,13 +547,13 @@ async function testEndpoint(endpoint, method = 'GET', body = null) {
         const resultHtml = `
             <div class="border-bottom pb-2 mb-2">
                 <div class="d-flex justify-content-between">
-                    <strong>${method} ${endpoint}</strong>
+                    <strong>${esc(method)} ${esc(endpoint)}</strong>
                     <small class="text-muted">${timestamp}</small>
                 </div>
-                <div class="${statusClass}">Status: ${response.status} ${response.statusText}</div>
+                <div class="${statusClass}">Status: ${response.status} ${esc(response.statusText)}</div>
                 <details class="mt-2">
                     <summary>Response Body</summary>
-                    <pre class="mt-2 p-2 bg-light rounded"><code>${JSON.stringify(data, null, 2)}</code></pre>
+                    <pre class="mt-2 p-2 bg-light rounded"><code>${esc(JSON.stringify(data, null, 2))}</code></pre>
                 </details>
             </div>
         `;
@@ -560,10 +566,10 @@ async function testEndpoint(endpoint, method = 'GET', body = null) {
         const errorHtml = `
             <div class="border-bottom pb-2 mb-2">
                 <div class="d-flex justify-content-between">
-                    <strong>${method} ${endpoint}</strong>
+                    <strong>${esc(method)} ${esc(endpoint)}</strong>
                     <small class="text-muted">${timestamp}</small>
                 </div>
-                <div class="text-danger">Error: ${error.message}</div>
+                <div class="text-danger">Error: ${esc(error.message)}</div>
             </div>
         `;
         
@@ -580,13 +586,7 @@ function clearTestResults() {
 
 // Show configuration forms
 function showConfigForm() {
-    const config = {
-        node_name: "Production Inference Node",
-        log_level: "INFO",
-        max_concurrent_inferences: 4
-    };
-    
-    testEndpoint('/api/node/config', 'POST', config);
+    window.location.href = "/node-info";
 }
 
 function showUploadModelForm() {
@@ -598,27 +598,11 @@ function showCreatePipelineForm() {
 }
 
 function showPublisherForm() {
-    const config = {
-        type: "mqtt",
-        config: {
-            server: "localhost",
-            port: 1883,
-            topic: "infernode/results"
-        }
-    };
-    
-    testEndpoint('/api/publisher/configure', 'POST', config);
+    window.location.href = "/publisher";
 }
 
 function showTelemetryForm() {
-    const config = {
-        enabled: true,
-        publish_interval: 30,
-        mqtt_broker: "localhost:1883",
-        mqtt_topic: "infernode/telemetry"
-    };
-    
-    testEndpoint('/api/telemetry/configure', 'POST', config);
+    window.location.href = "/telemetry";
 }
 
 // Smooth scrolling for navigation

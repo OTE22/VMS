@@ -1,4 +1,5 @@
 import logging
+from logging.handlers import RotatingFileHandler
 import sys
 import threading
 import json
@@ -161,6 +162,34 @@ class MemoryLogHandler(logging.Handler):
         return stats
 
 
+class AgeAndSizeRotatingHandler(RotatingFileHandler):
+    def __init__(self, *args, retention_days=7, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.retention_days = retention_days
+        self._last_prune = 0
+        self.prune()
+
+    def prune(self):
+        import time
+        from pathlib import Path
+        now = time.time()
+        self._last_prune = now
+        base = Path(self.baseFilename)
+        for path in base.parent.glob(base.name + '.*'):
+            if path.name[len(base.name) + 1:].isdigit():
+                try:
+                    if path.stat().st_mtime < now - self.retention_days * 86400:
+                        path.unlink()
+                except FileNotFoundError:
+                    pass
+
+    def emit(self, record):
+        import time
+        if time.time() - self._last_prune >= 3600:
+            self.prune()
+        super().emit(record)
+
+
 class LogManager:
     """Manages logging configuration and handlers"""
     
@@ -266,10 +295,10 @@ class LogManager:
             log_file = os.path.join(log_dir, 'infernode.log')
             max_bytes = self.max_log_size_mb * 1024 * 1024  # Convert MB to bytes
             
-            self.file_handler = logging.handlers.RotatingFileHandler(
+            self.file_handler = AgeAndSizeRotatingHandler(
                 log_file, 
                 maxBytes=max_bytes, 
-                backupCount=5
+                backupCount=5, retention_days=self.retention_days
             )
             
             self.file_handler.setLevel(self.log_level)
@@ -290,6 +319,20 @@ class LogManager:
     def update_settings(self, settings: Dict[str, Any]):
         """Update logging settings"""
         try:
+            if not isinstance(settings, dict):
+                return False
+            if 'log_level' in settings and settings['log_level'] not in ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'):
+                return False
+            for key in ('max_log_size_mb', 'retention_days'):
+                if key in settings and (type(settings[key]) is not int or settings[key] < 1):
+                    return False
+            if 'enable_file_logging' in settings and type(settings['enable_file_logging']) is not bool:
+                return False
+            # Apply rotation settings before a new handler is created.
+            if 'max_log_size_mb' in settings:
+                self.max_log_size_mb = settings['max_log_size_mb']
+                if self.file_handler:
+                    self.file_handler.maxBytes = self.max_log_size_mb * 1024 * 1024
             # Update log level
             if 'log_level' in settings:
                 level_str = settings['log_level'].upper()
@@ -322,6 +365,9 @@ class LogManager:
             
             if 'retention_days' in settings:
                 self.retention_days = settings['retention_days']
+                if self.file_handler and hasattr(self.file_handler, 'prune'):
+                    self.file_handler.retention_days = self.retention_days
+                    self.file_handler.prune()
             
             return True
             

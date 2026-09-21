@@ -76,7 +76,7 @@ test('untouched sanitized secret serializes as the sentinel, never blank', () =>
 test('blanked secret field is OMITTED (server preserves), not sent as ""', () => {
     const ctx = ctxWith({
         source: { value: 'rtsp://***@10.0.0.1/stream1' },
-        password: { type: 'password', value: '   ' }, password__clear: { type: 'checkbox', checked: false },
+        password: { type: 'password', value: '' }, password__clear: { type: 'checkbox', checked: false },
     });
     vm.runInContext('availableFrameSourceTypes = [' + JSON.stringify(IPCAM_SCHEMA) + ']', ctx);
     const r = vm.runInContext("collectFrameSourceConfigFromSchema('ip_camera')", ctx);

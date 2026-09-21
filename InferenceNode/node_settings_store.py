@@ -82,11 +82,11 @@ def get_setting(key: str, *, runtime: bool = False) -> Optional[dict]:
         return config_secrets.redact_config(row.value or {})    # key not needed for the API view
 
 
-def set_setting(key: str, value: dict) -> dict:
+def set_setting(key: str, value: dict, *, session=None) -> dict:
     """Validated upsert with redaction-safe merge (a redacted echo keeps the stored
     secret; explicit null clears). Secrets encrypted before write."""
     incoming = _validate(key, value)
-    with get_session() as s:
+    with get_session(session) as s:
         row = s.execute(select(NodeSetting).where(NodeSetting.key == key)).scalar_one_or_none()
         stored_plain, _ok = config_secrets.decrypt_config((row.value if row else None) or {})
         merged = unredact_into(stored_plain, {**stored_plain, **incoming})

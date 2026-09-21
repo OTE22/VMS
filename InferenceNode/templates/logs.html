@@ -233,71 +233,29 @@ async function loadLogs() {
             updateLogStatistics();
             filterLogs();
         } else {
-            console.error('Failed to load logs:', data.error);
+            throw new Error(data.error || `Load failed (HTTP ${response.status})`);
         }
     } catch (error) {
         console.error('Error loading logs:', error);
-        displayMockLogs(); // Fallback to mock data
+        allLogs = [];
+        filteredLogs = [];
+        updateLogStatistics();
+        document.getElementById('logContainer').innerHTML =
+            `<div class="p-3 text-warning">Could not load logs: ${esc(error.message)}. Retrying on the next refresh.</div>`;
     }
 }
 
-// Display mock logs for demonstration
-function displayMockLogs() {
-    const mockLogs = [
-        {
-            timestamp: new Date(Date.now() - 5000).toISOString(),
-            level: 'INFO',
-            component: 'inference',
-            message: 'Ultralytics YOLO model loaded successfully',
-            details: { model_name: 'yolov8n.pt', load_time: '2.3s' }
-        },
-        {
-            timestamp: new Date(Date.now() - 10000).toISOString(),
-            level: 'INFO',
-            component: 'web',
-            message: 'Web interface started on port 5000',
-            details: { port: 5000, address: '0.0.0.0' }
-        },
-        {
-            timestamp: new Date(Date.now() - 15000).toISOString(),
-            level: 'DEBUG',
-            component: 'publisher',
-            message: 'MQTT publisher configured',
-            details: { broker: 'localhost:1883', topic: 'infernode/results' }
-        },
-        {
-            timestamp: new Date(Date.now() - 20000).toISOString(),
-            level: 'WARNING',
-            component: 'telemetry',
-            message: 'High CPU usage detected',
-            details: { cpu_percent: 85.2, threshold: 80 }
-        },
-        {
-            timestamp: new Date(Date.now() - 25000).toISOString(),
-            level: 'ERROR',
-            component: 'inference',
-            message: 'Failed to load custom model',
-            details: { model_path: '/models/custom.onnx', error: 'File not found' }
-        },
-        {
-            timestamp: new Date(Date.now() - 30000).toISOString(),
-            level: 'INFO',
-            component: 'discovery',
-            message: 'Network discovery service started',
-            details: { port: 8888, broadcast_interval: 30 }
-        },
-        {
-            timestamp: new Date(Date.now() - 35000).toISOString(),
-            level: 'INFO',
-            component: 'system',
-            message: 'InferNode started successfully',
-            details: { version: '1.0.0', node_id: 'infernode-001' }
-        }
-    ];
-    
-    allLogs = mockLogs;
-    updateLogStatistics();
-    filterLogs();
+async function loadLogSettings() {
+    const result = await apiCall('/api/logs/settings');
+    if (!result.ok || !result.data?.success) {
+        showAlert('error', result.error || 'Could not load log settings');
+        return;
+    }
+    const settings = result.data.settings;
+    document.getElementById('globalLogLevel').value = settings.log_level;
+    document.getElementById('maxLogSize').value = settings.max_log_size_mb;
+    document.getElementById('logRetention').value = settings.retention_days;
+    document.getElementById('enableFileLogging').checked = settings.file_logging_enabled;
 }
 
 // Update log statistics
@@ -374,15 +332,15 @@ function displayLogs() {
         const timestamp = new Date(log.timestamp).toLocaleString();
         const levelClass = logLevelClasses[log.level] || 'text-muted';
         const detailsHtml = log.details ? 
-            `<div class="ms-4 mt-1"><small class="text-muted">${JSON.stringify(log.details)}</small></div>` : '';
+            `<div class="ms-4 mt-1"><small class="text-muted">${esc(JSON.stringify(log.details))}</small></div>` : '';
         
         return `
-            <div class="log-entry p-2 border-bottom" data-level="${log.level}" data-component="${log.component}">
+            <div class="log-entry p-2 border-bottom" data-level="${esc(log.level)}" data-component="${esc(log.component)}">
                 <div class="d-flex">
                     <span class="text-muted me-2 log-timestamp">${timestamp}</span>
-                    <span class="badge badge-sm me-2 log-level-badge ${levelClass}">${log.level}</span>
-                    <span class="badge bg-secondary me-2 log-component-badge">${log.component}</span>
-                    <span class="flex-grow-1">${log.message}</span>
+                    <span class="badge badge-sm me-2 log-level-badge ${levelClass}">${esc(log.level)}</span>
+                    <span class="badge bg-secondary me-2 log-component-badge">${esc(log.component)}</span>
+                    <span class="flex-grow-1">${esc(log.message)}</span>
                 </div>
                 ${detailsHtml}
             </div>
@@ -400,7 +358,7 @@ function refreshLogs() {
 
 function downloadLogs() {
     const logData = filteredLogs.map(log => 
-        `${log.timestamp} [${log.level}] ${log.component}: ${log.message}`
+        `${log.timestamp} [${esc(log.level)}] ${esc(log.component)}: ${esc(log.message)}`
     ).join('\n');
     
     const blob = new Blob([logData], { type: 'text/plain' });
@@ -491,6 +449,7 @@ function stopLogUpdates() {
 // Initialize page
 document.addEventListener('DOMContentLoaded', function() {
     loadLogs();
+    loadLogSettings();
     startLogUpdates();
 });
 

@@ -139,9 +139,16 @@ def advisory_lock(lock_key: int = 0x41524D59):  # 'ARMY'
 
 
 @contextmanager
-def get_session() -> Session:
-    """Yield a session; rolls back on error, always closes. Raises RuntimeError if
-    the engine was never configured (no DATABASE_URL)."""
+def get_session(session: Optional[Session] = None) -> Session:
+    """Own a session/transaction, or borrow one without committing or closing it.
+
+    The outer owner must let errors propagate to roll back the entire transaction.
+    Raises RuntimeError if no engine is configured and no session was supplied.
+    """
+    # A caller-owned transaction is committed/rolled back only by its owner.
+    if session is not None:
+        yield session
+        return
     if _SessionLocal is None:
         raise RuntimeError("Auth DB not configured (DATABASE_URL missing)")
     session: Session = _SessionLocal()

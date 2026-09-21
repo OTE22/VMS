@@ -66,3 +66,18 @@ def readiness_required(reason: str):
 
 def pytest_report_header(config):
     return f"ArmyEye readiness mode: {'ON (required proofs FAIL when unavailable)' if READINESS else 'off'}"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_default_config_key(tmp_path):
+    """Pipeline writes now require a key, just like publisher writes.
+
+    Explicit key-loss/rotation fixtures remain free to replace or unload this key.
+    Never read a deployment key as a fallback for tests.
+    """
+    from InferenceNode import config_secrets as cs
+    if not cs.keys_available():
+        key = tmp_path / 'default-test-config.key'
+        key.write_text(cs.generate_key_line('isolated-test'))
+        key.chmod(0o600)
+        cs.reload_keys(str(key))

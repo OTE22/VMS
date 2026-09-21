@@ -31,7 +31,7 @@ UI_JS = os.path.join(REPO, "InferenceNode", "static", "js", "armyeye-ui.js")
 # node test suite
 # --------------------------------------------------------------------------- #
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
-@pytest.mark.parametrize("suite", ["armyeye_ui.test.mjs", "admin_users_render.test.mjs", "pipeline_builder_roundtrip.test.mjs"])
+@pytest.mark.parametrize("suite", ["armyeye_ui.test.mjs", "admin_users_render.test.mjs", "pipeline_builder_roundtrip.test.mjs", "frontend_api_contracts.test.mjs", "form_payload_audit.test.mjs"])
 def test_node_suite(suite):
     proc = subprocess.run(
         ["node", "--test", os.path.join(REPO, "tests", suite)],

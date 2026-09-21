@@ -21,7 +21,7 @@ from conftest import REPO
 
 # The current migration head. Bump when a migration is added - the point of these
 # tests is that upgrade/downgrade round-trips cleanly, not which revision is newest.
-HEAD = "0007_reference_integrity"
+HEAD = "0008_publisher_description"
 
 
 def _alembic(pg, *args):
@@ -276,3 +276,30 @@ def test_bootstrap_orders_0004_then_legacy_models_then_0005(pg_guard, tmp_path, 
         c.execute(text("DELETE FROM pipelines WHERE pipeline_id='legacy-p1'"))
     # already at head: bootstrap is a plain no-op
     bs.bootstrap_database(legacy_root=str(legacy))
+
+
+def test_publisher_description_migration_preserves_existing_rows(pg_guard):
+    """An existing favorite survives upgrade; description is a nullable addition."""
+    from InferenceNode import publisher_store as pst
+    from InferenceNode.auth import db
+    down = _alembic(pg_guard, "downgrade", "0007_reference_integrity")
+    assert down.returncode == 0, down.stdout + down.stderr
+    try:
+        with pg_guard['engine'].begin() as c:
+            c.execute(text("INSERT INTO publishers (publisher_id, name, type, kind, enabled, config) "
+                           "VALUES ('migration-description', 'Existing', 'null', 'favorite', true, '{}')"))
+    finally:
+        up = _alembic(pg_guard, "upgrade", "head")
+        assert up.returncode == 0, up.stdout + up.stderr
+    try:
+        row = pst.get_publisher('migration-description')
+        assert row['name'] == 'Existing' and row['description'] is None
+        pst.update_publisher(row['id'], description='Survives a new session')
+        assert pst.get_publisher(row['id'])['description'] == 'Survives a new session'
+        with pytest.raises(RuntimeError):
+            with db.get_session() as session:
+                pst.update_publisher(row['id'], description='must roll back', session=session)
+                raise RuntimeError('later write failed')
+        assert pst.get_publisher(row['id'])['description'] == 'Survives a new session'
+    finally:
+        pst.delete_publisher('migration-description')

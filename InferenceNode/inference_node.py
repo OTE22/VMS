@@ -155,6 +155,11 @@ class InferenceNode:
         auth_db.init_engine()
         bootstrap_database(legacy_root=self.legacy_root)   # 0004 -> legacy models -> 0005/head + admin seed
         
+        # Encrypt legacy pipeline secrets before any runtime consumer reads them.
+        from InferenceNode import config_secrets, pipeline_secrets
+        config_secrets.reload_keys()
+        pipeline_secrets.migrate_existing()
+
         # Hardware detection (initialize early so node capabilities can use it)
         self.hardware_detector = HardwareDetector()
         print(f"[TOOL] Hardware detection completed:")
@@ -747,6 +752,7 @@ class InferenceNode:
         @self._admin_csrf
         def update_log_settings():
             """Update log settings"""
+            previous = self.log_manager.get_settings() if self.log_manager else None
             try:
                 if not self.log_manager:
                     return jsonify({'error': 'Log manager not available'}), 500
@@ -755,6 +761,8 @@ class InferenceNode:
                 success = self.log_manager.update_settings(data)
                 
                 if success:
+                    from InferenceNode import node_settings_store as nss
+                    nss.set_setting(nss.KEY_PREFERENCES, {'logging': self.log_manager.get_settings()})
                     return jsonify({
                         'success': True,
                         'message': 'Log settings updated successfully'
@@ -763,6 +771,9 @@ class InferenceNode:
                     return jsonify({'error': 'Failed to update log settings'}), 500
                 
             except Exception as e:
+                if previous:
+                    previous['enable_file_logging'] = previous.pop('file_logging_enabled')
+                    self.log_manager.update_settings(previous)
                 self.logger.error(f"Update log settings error: {str(e)}")
                 return jsonify({'error': str(e)}), 500
         
@@ -840,7 +851,7 @@ class InferenceNode:
                         # Configuration
                         'config': {
                             'node_name': self.node_name,
-                            'log_level': 'INFO',  # You can make this configurable
+                            'log_level': self.log_manager.get_settings()['log_level'] if self.log_manager else 'INFO',
                             'web_port': self.port
                         },
                         
@@ -867,10 +878,14 @@ class InferenceNode:
         @self._admin_csrf
         def update_node_config():
             """Update node configuration"""
+            previous_name = self.node_name
+            previous_logging = self.log_manager.get_settings() if self.log_manager else None
             try:
                 data = request.get_json()
-                if not data:
-                    return jsonify({'error': 'No configuration data provided'}), 400
+                if not isinstance(data, dict) or not data:
+                    return jsonify({'error': 'Configuration must be a nonempty object'}), 400
+                if 'web_port' in data and data['web_port'] != self.port:
+                    return jsonify({'error': 'Web port is managed by deployment configuration, not this form'}), 400
                 
                 # Update node name if provided
                 if 'node_name' in data and data['node_name']:
@@ -883,18 +898,11 @@ class InferenceNode:
                     if self.discovery_manager:
                         self.discovery_manager.set_node_info(self.node_id, self.node_info)
                 
-                # Update log level if provided
+                # Preserve file logging/rotation preferences when changing the level.
                 if 'log_level' in data and self.log_manager:
-                    try:
-                        self.log_manager.setup_logging(log_level=data['log_level'], enable_file_logging=True)
-                        self.logger.info(f"Log level updated to {data['log_level']}")
-                    except Exception as e:
-                        self.logger.warning(f"Failed to update log level: {e}")
-                
-                # Note: Web port changes would require restart, so we'll just log it
-                if 'web_port' in data and data['web_port'] != self.port:
-                    self.logger.info(f"Web port change requested to {data['web_port']} (requires restart)")
-                
+                    if not self.log_manager.update_settings({'log_level': data['log_level']}):
+                        raise ValueError('Failed to update log level')
+
                 # Save settings
                 self._save_settings()
                 
@@ -903,12 +911,19 @@ class InferenceNode:
                     'message': 'Configuration updated successfully',
                     'config': {
                         'node_name': self.node_name,
-                        'log_level': data.get('log_level', 'INFO'),
+                        'log_level': self.log_manager.get_settings()['log_level'] if self.log_manager else 'INFO',
                         'web_port': self.port
                     }
                 })
                 
             except Exception as e:
+                self.node_name = previous_name
+                self.node_info['node_name'] = previous_name
+                if self.discovery_manager:
+                    self.discovery_manager.set_node_info(self.node_id, self.node_info)
+                if previous_logging:
+                    previous_logging['enable_file_logging'] = previous_logging.pop('file_logging_enabled')
+                    self.log_manager.update_settings(previous_logging)
                 self.logger.error(f"Update node config error: {str(e)}")
                 return jsonify({'error': f'Failed to update configuration: {str(e)}'}), 500
         
@@ -1058,16 +1073,11 @@ class InferenceNode:
                 if file.filename == '':
                     return jsonify({'error': 'No file selected'}), 400
                 
-                # Save uploaded file temporarily
-                temp_dir = tempfile.gettempdir()
-                # secure_filename: the raw client filename could contain "../" and
-                # file.save() would write outside the temp dir.
                 from werkzeug.utils import secure_filename
                 safe_name = secure_filename(file.filename or '') or 'uploaded_model'
-                temp_path = os.path.join(temp_dir, safe_name)
-                file.save(temp_path)
-                
-                try:
+                with tempfile.TemporaryDirectory(prefix='armyeye-model-upload-') as temp_dir:
+                    temp_path = os.path.join(temp_dir, safe_name)
+                    file.save(temp_path)
                     # Store model: PostgreSQL registry (STAGING -> ... -> AVAILABLE) +
                     # ARTIFACT_ROOT bytes. Uploader identity is server-derived (never from
                     # the client) and recorded on the model row itself - the old separate
@@ -1091,11 +1101,6 @@ class InferenceNode:
                         'message': f'Model {file.filename} uploaded successfully'
                     })
                     
-                finally:
-                    # Clean up temp file
-                    if os.path.exists(temp_path):
-                        os.remove(temp_path)
-                
             except Exception as e:
                 self.logger.error(f"Model upload error: {str(e)}")
                 return jsonify({'error': str(e)}), 500
@@ -1541,34 +1546,46 @@ class InferenceNode:
                 mqtt_username = creds.get('mqtt_username') if creds else stored_tel.get('mqtt_username')
                 mqtt_password = creds.get('mqtt_password') if creds else stored_tel.get('mqtt_password')
                 
-                # Configure MQTT if server is provided
-                if mqtt_server:
-                    try:
-                        self.telemetry.mqtt_username = mqtt_username
-                        self.telemetry.mqtt_password = mqtt_password
-                        self.telemetry.configure_mqtt(
-                            mqtt_server=mqtt_server,
-                            mqtt_port=int(mqtt_port),
-                            mqtt_topic=mqtt_topic,
-                            mqtt_username=mqtt_username,
-                            mqtt_password=mqtt_password
-                        )
-                    except Exception as e:
-                        return jsonify({'error': f'Failed to configure MQTT: {str(e)}'}), 400
-                
-                # Configure publish interval (update the update_interval attribute)
-                if hasattr(self.telemetry, 'update_interval'):
-                    self.telemetry.update_interval = float(publish_interval)
-                
-                # Start or stop telemetry based on enabled flag
-                if enabled:
-                    self.telemetry.start_telemetry()
-                else:
-                    self.telemetry.stop_telemetry()
-                
-                # Save settings after configuring telemetry
-                self._save_settings()
-                
+                import math
+                try:
+                    publish_interval = float(publish_interval)
+                    mqtt_port = int(mqtt_port)
+                    if type(enabled) is not bool or not math.isfinite(publish_interval) or not 5 <= publish_interval <= 300 or not 1 <= mqtt_port <= 65535:
+                        raise ValueError('Invalid telemetry interval, port or enabled value')
+                    if not isinstance(mqtt_server, str) or not isinstance(mqtt_topic, str):
+                        raise ValueError('MQTT server and topic must be strings')
+                except (TypeError, ValueError) as exc:
+                    return jsonify({'error': str(exc)}), 400
+                desired = dict(mqtt_server=mqtt_server, mqtt_port=mqtt_port, mqtt_topic=mqtt_topic,
+                               mqtt_username=mqtt_username, mqtt_password=mqtt_password,
+                               update_interval=publish_interval, running=enabled)
+                previous = {key: getattr(self.telemetry, key, None) for key in desired}
+                for key, value in desired.items():
+                    setattr(self.telemetry, key, value)
+                try:
+                    self._save_settings()
+                except Exception:
+                    for key, value in previous.items():
+                        setattr(self.telemetry, key, value)
+                    raise
+                # Saved desired state is durable before attempting network changes.
+                self.telemetry.running = previous['running']
+                try:
+                    if mqtt_server:
+                        self.telemetry.configure_mqtt(mqtt_server=mqtt_server, mqtt_port=mqtt_port,
+                            mqtt_topic=mqtt_topic, mqtt_username=mqtt_username, mqtt_password=mqtt_password)
+                    elif getattr(self.telemetry, 'mqtt_client', None):
+                        self.telemetry.mqtt_client.disconnect()
+                        self.telemetry.mqtt_client.loop_stop()
+                        self.telemetry.mqtt_client = None
+                    if enabled:
+                        self.telemetry.start_telemetry()
+                    else:
+                        self.telemetry.stop_telemetry()
+                except Exception as exc:
+                    return jsonify({'status': 'saved', 'saved': True,
+                                    'error': f'Configuration saved, but telemetry activation failed: {exc}'}), 502
+
                 return jsonify({
                     'status': 'configured',
                     'enabled': enabled,
@@ -1763,36 +1780,26 @@ class InferenceNode:
                     'data': message
                 }
                 
-                # Create temporary destinations from favorites and publish
-                temp_destinations = []
+                # One synchronous attempt per favorite; report failures individually.
+                results = {}
                 for favorite in selected_favorites:
+                    destination = None
                     try:
                         destination = ResultDestination(favorite['type'])
-                        destination.set_context_variables(
-                            node_id=self.node_id,
-                            node_name=self.node_name
-                        )
+                        destination.set_context_variables(node_id=self.node_id, node_name=self.node_name)
                         destination.configure(**favorite['config'])
-                        temp_destinations.append(destination)
-                    except Exception as e:
-                        self.logger.error(f"Failed to create destination for favorite {favorite.get('name', 'unknown')}: {str(e)}")
-                
-                # Publish using temporary destinations
-                results = {}
-                for dest in temp_destinations:
-                    try:
-                        result = dest.publish(test_message)
-                        results[dest.__class__.__name__] = result
-                    except Exception as e:
-                        results[dest.__class__.__name__] = {'error': str(e)}
-                
-                return jsonify({
-                    'status': 'success',
-                    'message': f'Test message sent to {len(temp_destinations)} favorite destination(s)',
-                    'results': results,
-                    'destinations_count': len(temp_destinations)
-                })
-                
+                        results[favorite['id']] = destination.publish_once(test_message)
+                    except Exception as exc:
+                        results[favorite['id']] = {'status': 'error', 'error': str(exc)}
+                    finally:
+                        if destination is not None:
+                            destination.stop_queue()
+                            destination.close()
+                success = all(r.get('status') == 'success' for r in results.values())
+                return jsonify({'status': 'success' if success else 'error',
+                    'message': 'Test completed' if success else 'One or more test destinations failed',
+                    'results': results, 'destinations_count': len(results)}), (200 if success else 502)
+
             except Exception as e:
                 self.logger.error(f"Test publish favorites error: {str(e)}")
                 return jsonify({'error': str(e)}), 500
@@ -2097,7 +2104,8 @@ class InferenceNode:
                         return jsonify({'error': f'A favorite named "{name}" already exists'}), 400
                 try:
                     favorite = _pst.create_publisher(name=name, type=destination_type, config=config,
-                                                     kind='favorite', created_by=getattr(current_user, 'id', None))
+                                                     kind='favorite', description=data.get('description') or '',
+                                                     created_by=getattr(current_user, 'id', None))
                 except SecretsUnavailable:
                     return jsonify({'error': 'Configuration encryption key unavailable; refusing to store a '
                                              'secret in clear (set ARMYEYE_CONFIG_ENCRYPTION_KEY_FILE)'}), 503
@@ -2145,6 +2153,7 @@ class InferenceNode:
                             return jsonify({'error': f'A favorite named "{new_name}" already exists'}), 400
                 try:
                     updated = _pst.update_publisher(favorite_id, name=new_name, type=data.get('type'),
+                                                    description=data.get('description'),
                                                     config=data.get('config') if 'config' in data else None)
                 except SecretsUnavailable:
                     return jsonify({'error': 'Configuration encryption key unavailable'}), 503
@@ -3473,6 +3482,7 @@ class InferenceNode:
                             'frame_source': _sanitize(pipeline['frame_source']),
                             'model': _sanitize(pipeline['model']),
                             'destinations': _sanitize(pipeline.get('destinations', [])),
+                            'inference_enabled': pipeline.get('inference_enabled', True),
                             'export_metadata': {
                                 'exported_by': self.node_name,
                                 'export_date': datetime.now().isoformat(),
@@ -3492,38 +3502,26 @@ class InferenceNode:
                         
                         # Copy model files if they exist
                         model_files_included = []
-                        if 'model' in pipeline and 'id' in pipeline['model']:
-                            model_id = pipeline['model']['id']
+                        model_id = pipeline.get('model', {}).get('id')
+                        if model_id:
+                            from InferenceNode import artifact_paths as ap
                             model_metadata = self.model_repo.get_model_metadata(model_id)
-                            
-                            if model_metadata:
-                                model_path = self.model_repo.get_model_path(model_id)
-                                if model_path and os.path.exists(model_path):
-                                    # Copy main model file
-                                    model_filename = model_metadata['stored_filename']
-                                    dest_path = os.path.join(models_dir, model_filename)
-                                    shutil.copy2(model_path, dest_path)
-                                    model_files_included.append(model_filename)
-                                    
-                                    # For some models, there might be additional files (e.g., OpenVINO models)
-                                    model_dir = os.path.dirname(model_path)
-                                    model_base_name = os.path.splitext(model_metadata['stored_filename'])[0]
-                                    
-                                    # Look for related files (same base name, different extensions)
-                                    for file in os.listdir(model_dir):
-                                        if file.startswith(model_base_name) and file != model_metadata['stored_filename']:
-                                            src_file = os.path.join(model_dir, file)
-                                            dest_file = os.path.join(models_dir, file)
-                                            if os.path.isfile(src_file):
-                                                shutil.copy2(src_file, dest_file)
-                                                model_files_included.append(file)
-                                    
-                                    # Include model metadata
-                                    model_metadata_file = os.path.join(models_dir, 'model_metadata.json')
-                                    with open(model_metadata_file, 'w') as f:
-                                        json.dump(model_metadata, f, indent=2)
-                                    model_files_included.append('model_metadata.json')
-                        
+                            if not model_metadata:
+                                raise ValueError('Model metadata unavailable')
+                            # Export registered bytes, including multi-file representations.
+                            for representation in model_metadata.get('representations', []):
+                                if representation.get('kind') != 'primary':
+                                    continue
+                                for artifact in representation.get('artifacts', []):
+                                    relative = artifact['relative_path']
+                                    src = ap.resolve('models', relative, must_exist=True)
+                                    target = os.path.join(models_dir, relative)
+                                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                                    shutil.copy2(src, target)
+                                    model_files_included.append(relative)
+                            with open(os.path.join(models_dir, 'model_metadata.json'), 'w') as f:
+                                json.dump(model_metadata, f)
+
                         # Add model files list to config
                         config_data['export_metadata']['model_files'] = model_files_included
                         
@@ -3591,6 +3589,8 @@ class InferenceNode:
         @self.app.route('/api/pipeline/import', methods=['POST'])
         def import_pipeline():
             """Import a pipeline from an uploaded ZIP file"""
+            new_model_id = None
+            pipeline_created = False
             try:
                 # Admin is checked FIRST: previously the zip was extracted and its model
                 # stored into the repository BEFORE the create-time admin check, so a
@@ -3618,12 +3618,17 @@ class InferenceNode:
                 # Create temporary directory for import
                 with tempfile.TemporaryDirectory() as temp_dir:
                     # Save uploaded file
-                    zip_path = os.path.join(temp_dir, file.filename)
+                    zip_path = os.path.join(temp_dir, "upload.zip")
                     file.save(zip_path)
                     
                     # Extract ZIP file
                     extract_dir = os.path.join(temp_dir, 'extracted')
                     with zipfile.ZipFile(zip_path, 'r') as zipf:
+                        from pathlib import PurePosixPath
+                        for member in zipf.infolist():
+                            path = PurePosixPath(member.filename)
+                            if path.is_absolute() or '..' in path.parts or '\\' in member.filename:
+                                return jsonify({'error': 'Unsafe archive path'}), 400
                         zipf.extractall(extract_dir)
                     
                     # Read pipeline configuration
@@ -3652,48 +3657,44 @@ class InferenceNode:
                             with open(model_metadata_file, 'r') as f:
                                 model_metadata = json.load(f)
                         
-                        # Find the main model file
-                        model_files = [f for f in os.listdir(models_dir) if f != 'model_metadata.json']
+                        from pathlib import Path
+                        model_files = sorted(p for p in Path(models_dir).rglob('*') if p.is_file() and p.name != 'model_metadata.json')
                         if model_files:
-                            # Use the first model file (or the one specified in metadata)
-                            main_model_file = model_files[0]
-                            if model_metadata and 'stored_filename' in model_metadata:
-                                main_model_file = model_metadata['stored_filename']
-                                if main_model_file not in model_files:
-                                    main_model_file = model_files[0]
-                            
-                            # Import the model
-                            model_file_path = os.path.join(models_dir, main_model_file)
-                            original_filename = model_metadata.get('original_filename', main_model_file) if model_metadata else main_model_file
-                            engine_type = config_data['model'].get('engine_type', 'unknown')
-                            description = f"Imported with pipeline: {config_data['name']}"
-                            # Use name from metadata if available, otherwise use filename without extension
-                            imported_name = model_metadata.get('name', os.path.splitext(original_filename)[0]) if model_metadata else os.path.splitext(original_filename)[0]
-                            
-                            # Store the model in the repository
-                            new_model_id = self.model_repo.store_model(
-                                model_file_path, 
-                                original_filename, 
-                                engine_type, 
-                                description,
-                                imported_name
-                            )
-                            
-                            # Copy any additional model files
-                            new_model_metadata = self.model_repo.get_model_metadata(new_model_id)
-                            if new_model_metadata:
-                                new_model_dir = os.path.dirname(new_model_metadata['stored_path'])
-                                new_model_base = os.path.splitext(new_model_metadata['stored_filename'])[0]
-                                
-                                for model_file in model_files:
-                                    if model_file != main_model_file and model_file != 'model_metadata.json':
-                                        src_path = os.path.join(models_dir, model_file)
-                                        # Rename additional files to match new model ID
-                                        file_ext = os.path.splitext(model_file)[1]
-                                        dest_filename = f"{new_model_base}{file_ext}"
-                                        dest_path = os.path.join(new_model_dir, dest_filename)
-                                        shutil.copy2(src_path, dest_path)
-                    
+                            # Store the primary file through the registry. Related files are
+                            # registered below; never copy untracked bytes into its directory.
+                            main = next((p for p in model_files if p.suffix == '.xml'), model_files[0])
+                            original_filename = main.name
+                            if model_metadata:
+                                original_filename = model_metadata.get('original_filename') or main.name
+                                suffix = Path(original_filename).suffix
+                                main = next((p for p in model_files if p.suffix == suffix), main)
+                            new_model_id = 'import-' + uuid.uuid4().hex
+                            self.model_repo.store_model(
+                                str(main), original_filename,
+                                config_data['model'].get('engine_type', 'unknown'),
+                                (model_metadata or {}).get('description') or f"Imported with pipeline: {config_data['name']}",
+                                (model_metadata or {}).get('name', main.stem), model_id=new_model_id)
+                            if len(model_files) > 1:
+                                from InferenceNode import artifact_paths as ap, model_registry as reg
+                                from InferenceNode.artifact_migration import sha256_file
+                                from InferenceNode.artifact_states import ArtifactStatus as S, ValidationStatus as V
+                                metadata = self.model_repo.get_model_metadata(new_model_id)
+                                primary = metadata['representations'][0]
+                                files = [dict(a) for a in primary['artifacts']]
+                                for index, source in enumerate(model_files):
+                                    if source == main:
+                                        continue
+                                    # Preserve sidecar base names (OpenVINO XML/BIN).
+                                    rel = f"{new_model_id}/{new_model_id}{source.suffix}" if source.stem == main.stem else f"{new_model_id}/extra-{index}{source.suffix}"
+                                    target = ap.resolve('models', rel)
+                                    shutil.copy2(source, target)
+                                    sha, size = sha256_file(target)
+                                    files.append({'relative_path': rel, 'sha256': sha, 'size_bytes': size,
+                                                  'status': S.AVAILABLE, 'validation_status': V.PASSED})
+                                reg.register_representation(model_id=new_model_id, format=primary['format'],
+                                    kind='primary', required=True, files=files)
+                                reg.recompute_model_status(new_model_id)
+
                     # Update model ID in configuration
                     if new_model_id:
                         config_data['model']['id'] = new_model_id
@@ -3726,8 +3727,11 @@ class InferenceNode:
                                             description=config_data.get('description'),
                                             config=definition, status='stopped')
                     except _ps.AccessDenied:
+                        if new_model_id:
+                            self.model_repo.delete_model(new_model_id)
                         return jsonify({'error': 'Pipeline not found or access denied'}), 404
 
+                    pipeline_created = True
                     self.logger.info(f"Pipeline imported: {pipeline_name} ({pipeline_id})")
                     
                     return jsonify({
@@ -3739,6 +3743,11 @@ class InferenceNode:
                     })
                     
             except Exception as e:
+                if new_model_id and not pipeline_created:
+                    try:
+                        self.model_repo.delete_model(new_model_id)
+                    except Exception:
+                        self.logger.exception('Failed to clean up imported model')
                 self.logger.error(f"Import pipeline error: {str(e)}")
                 return jsonify({'error': str(e)}), 500
         
@@ -3953,6 +3962,8 @@ class InferenceNode:
                          'config': row['config'], **{k: row['config'].get(k) for k in ('rate_limit', 'include_image_data')
                                                     if k in row['config']}})
         settings['publishers'] = pubs
+        prefs = nss.get_setting(nss.KEY_PREFERENCES) or {}
+        settings['logging'] = prefs.get('logging')
         return settings
 
     def _audit_event(self, action: str, actor, target, detail: dict = None) -> None:
@@ -3997,6 +4008,12 @@ class InferenceNode:
                     self.node_name = settings['node_name']
                     self.logger.info(f"Restored node name: {self.node_name}")
                 
+                if settings.get('logging') and self.log_manager:
+                    log_settings = dict(settings['logging'])
+                    log_settings['enable_file_logging'] = log_settings.pop('file_logging_enabled', True)
+                    if not self.log_manager.update_settings(log_settings):
+                        raise RuntimeError('Failed to restore logging settings')
+
                 # Restore publisher configurations
                 if 'publishers' in settings:
                     for pub_config in settings['publishers']:
@@ -4056,6 +4073,11 @@ class InferenceNode:
                 # Restore telemetry configuration
                 if 'telemetry' in settings and self.telemetry:
                     telemetry_config = settings['telemetry']
+                    # Restore even an explicitly blank broker's topic/port.
+                    self.telemetry.mqtt_server = telemetry_config.get('mqtt_server', '')
+                    self.telemetry.mqtt_port = telemetry_config.get('mqtt_port', 1883)
+                    self.telemetry.mqtt_topic = telemetry_config.get('mqtt_topic', 'infernode/telemetry')
+                    self.telemetry.update_interval = float(telemetry_config.get('publish_interval', 30))
                     try:
                         # Restore MQTT configuration
                         if telemetry_config.get('mqtt_server'):
@@ -4129,7 +4151,7 @@ class InferenceNode:
             self.logger.error(f"Failed to load settings: {str(e)}")
     
     def _save_settings(self):
-        """Save current settings to file"""
+        """Persist settings atomically; propagate failures to the API caller."""
         
         #TODO - check all these hard coded strings
         try:
@@ -4224,7 +4246,7 @@ class InferenceNode:
                 }
                 
                 # Add MQTT config if available
-                if hasattr(self.telemetry, 'mqtt_server') and getattr(self.telemetry, 'mqtt_server', ''):
+                if hasattr(self.telemetry, 'mqtt_server'):
                     telemetry_config.update({
                         'mqtt_server': getattr(self.telemetry, 'mqtt_server', ''),
                         'mqtt_port': getattr(self.telemetry, 'mqtt_port', 1883),
@@ -4236,45 +4258,41 @@ class InferenceNode:
             # Persist to PostgreSQL (authoritative). node_settings.json is NOT written any
             # more - no dual-write. Favorites are managed directly by publisher_store.
             from InferenceNode import node_settings_store as nss, publisher_store as pst
-            from InferenceNode.config_secrets import SecretsUnavailable
-            nss.set_setting(nss.KEY_NODE_IDENTITY, {'node_id': settings.get('node_id'),
-                                                    'node_name': settings.get('node_name')})
-            if 'telemetry' in settings:
-                tel = dict(settings['telemetry'])
-                for k in ('mqtt_username', 'mqtt_password'):
-                    v = getattr(self.telemetry, k, None) if self.telemetry else None
-                    if v:
-                        tel[k] = v
-                try:
-                    nss.set_setting(nss.KEY_TELEMETRY, tel)
-                except SecretsUnavailable:
-                    self.logger.error("[SECRETS] telemetry MQTT credentials NOT persisted: encryption key unavailable")
-                    tel.pop('mqtt_password', None); tel.pop('mqtt_username', None)
-                    nss.set_setting(nss.KEY_TELEMETRY, tel)
-            existing = {r['id']: r for r in pst.list_publishers(kind='node_destination')}
-            seen = set()
-            for pub in settings.get('publishers', []):
-                pid = pub.get('id') or str(uuid.uuid4())
-                seen.add(pid)
-                cfg = dict(pub.get('config') or {})
-                for k in ('rate_limit', 'include_image_data'):
-                    if k in pub and pub[k] is not None:
-                        cfg[k] = pub[k]
-                try:
+            from InferenceNode.auth.db import get_session
+            with get_session() as session:
+                nss.set_setting(nss.KEY_NODE_IDENTITY, {'node_id': self.node_id,
+                                                      'node_name': self.node_name}, session=session)
+                if self.log_manager:
+                    nss.set_setting(nss.KEY_PREFERENCES, {'logging': self.log_manager.get_settings()}, session=session)
+                if self.telemetry:
+                    tel = dict(settings['telemetry'])
+                    for k in ('mqtt_username', 'mqtt_password'):
+                        if hasattr(self.telemetry, k):
+                            tel[k] = getattr(self.telemetry, k)
+                    nss.set_setting(nss.KEY_TELEMETRY, tel, session=session)
+                existing = {r['id']: r for r in pst.list_publishers(kind='node_destination', session=session)}
+                seen = set()
+                for pub in settings.get('publishers', []):
+                    pid = pub.get('id') or str(uuid.uuid4())
+                    seen.add(pid)
+                    cfg = dict(pub.get('config') or {})
+                    for k in ('rate_limit', 'include_image_data'):
+                        if k in pub and pub[k] is not None:
+                            cfg[k] = pub[k]
                     if pid in existing:
-                        pst.update_publisher(pid, type=pub.get('type'), config=cfg, enabled=pub.get('enabled', True))
+                        pst.update_publisher(pid, type=pub.get('type'), config=cfg,
+                                             enabled=pub.get('enabled', True), session=session)
                     else:
                         pst.create_publisher(publisher_id=pid, name=pub.get('name') or pub.get('type'),
                                              type=pub.get('type'), config=cfg, kind='node_destination',
-                                             enabled=pub.get('enabled', True))
-                except SecretsUnavailable:
-                    self.logger.error(f"[SECRETS] node destination {pid} NOT persisted: encryption key unavailable")
-            for pid in set(existing) - seen:
-                pst.delete_publisher(pid)          # destination removed at runtime -> row removed
+                                             enabled=pub.get('enabled', True), session=session)
+                for pid in set(existing) - seen:
+                    pst.delete_publisher(pid, session=session)
             self.logger.info("Settings saved to PostgreSQL (node_settings/publishers)")
             
         except Exception as e:
             self.logger.error(f"Failed to save settings: {str(e)}")
+            raise
     
     def start(self, enable_discovery: bool = True, enable_telemetry: bool = False, production: bool = False):
         """Start the inference node

@@ -200,7 +200,7 @@ def migrate_node_settings(node_settings_json: str, *, force: bool = False) -> Mi
             if pst.get_publisher(fid) is None:
                 pst.create_publisher(publisher_id=fid, name=fav.get("name") or fav.get("type") or fid,
                                      type=fav.get("type") or "unknown", config=fav.get("config") or {},
-                                     kind="favorite", enabled=True)
+                                     kind="favorite", enabled=True, description=fav.get("description"))
         _one(f"favorite:{fid}", _mk)
     for pub in (data.get("publishers") or []):
         pid = pub.get("id") or str(__import__("uuid").uuid4())

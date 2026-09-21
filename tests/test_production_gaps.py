@@ -291,7 +291,7 @@ class TestLoggingRepair:
             # exactly one of each - never stacked duplicates
             mems = [h for h in root.handlers if isinstance(h, lm_mod.MemoryLogHandler)]
             files = [h for h in root.handlers
-                     if h.__class__.__name__ == "RotatingFileHandler"]
+                     if isinstance(h, logging.handlers.RotatingFileHandler)]
             streams = [h for h in root.handlers
                        if type(h) is logging.StreamHandler]
             assert (len(mems), len(files), len(streams)) == (1, 1, 1)

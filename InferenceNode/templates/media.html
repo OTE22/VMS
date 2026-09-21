@@ -84,7 +84,9 @@ function refsCell(m) {
 async function loadMedia() {
   const list = document.getElementById('mediaList');
   try {
-    const data = await fetchJSON('/api/media');
+    const response = await fetchJSON('/api/media');
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `Load failed (HTTP ${response.status})`);
     mediaCache = data.media || [];
     document.getElementById('mediaSummary').textContent =
       `${data.count} file(s) · ${fmtSize(data.total_size_bytes)}`;
@@ -153,7 +155,7 @@ document.getElementById('confirmDeleteMedia').addEventListener('click', async ()
   btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Deleting…';
   try {
     const r = await apiCall(`/api/media/${encodeURIComponent(pendingDelete)}`, { method: 'DELETE' });
-    const body = await r.json().catch(() => ({}));
+    const body = r.data || {};
     if (r.ok) {
       showAlert('success', `Deleted ${body.relative_path || 'media'}`);
     } else if (r.status === 409) {
@@ -161,7 +163,7 @@ document.getElementById('confirmDeleteMedia').addEventListener('click', async ()
       const names = (body.pipelines || []).map(p => p.name || p.pipeline_id).join(', ');
       showAlert('error', `Still in use by: ${names || 'a pipeline'} — not deleted`);
     } else {
-      showAlert('error', body.error || `Delete failed (HTTP ${r.status})`);
+      showAlert('error', r.error || body.error || `Delete failed (HTTP ${r.status})`);
     }
   } catch (e) {
     showAlert('error', `Delete failed: ${e.message || e}`);

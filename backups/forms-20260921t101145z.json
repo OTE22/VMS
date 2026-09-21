@@ -1,0 +1,13 @@
+{
+  "release_image": "armyeye-vms:forms-20260921t101145z",
+  "rollback_image": "armyeye-vms:before-forms-20260921t101145z",
+  "database_backup": "/home/itdirect-ai/Desktop/VMS/backups/pre-forms-20260921t101145z.dump",
+  "previous_image_id": "sha256:faf0408ea7782eda5e8149eca5f6f6262d863564dce14e2058851a682fe17671",
+  "backend_tests": {
+    "passed": 964,
+    "skipped": 34
+  },
+  "frontend_tests_passed": 52,
+  "authenticated_checks": 19,
+  "pipeline_states_preserved": true
+}

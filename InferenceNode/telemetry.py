@@ -39,6 +39,9 @@ class NodeTelemetry:
             self.mqtt_port = mqtt_port
             self.mqtt_topic = mqtt_topic
             
+            if self.mqtt_client:
+                self.mqtt_client.disconnect()
+                self.mqtt_client.loop_stop()
             self.mqtt_client = mqtt.Client()
             
             if mqtt_username and mqtt_password:
@@ -51,8 +54,10 @@ class NodeTelemetry:
             
         except ImportError:
             self.logger.error("paho-mqtt package not installed for telemetry")
+            raise
         except Exception as e:
             self.logger.error(f"MQTT telemetry configuration failed: {str(e)}")
+            raise
     
     def _system_info(self):
         if not hasattr(self, '_static_system_info'):

@@ -167,7 +167,7 @@ class ModelRepository:
     # ------------------------------------------------------------ CREATE (state machine)
     def store_model(self, temp_file_path: str, original_filename: str, engine_type: str,
                     description: str = "", name: str = "", *, uploader_id=None,
-                    uploader_username=None) -> str:
+                    uploader_username=None, model_id=None) -> str:
         from . import artifact_paths as ap
         from . import model_registry as reg
         from .artifact_migration import sha256_file
@@ -178,7 +178,7 @@ class ModelRepository:
 
         with open(temp_file_path, 'rb') as f:
             file_content = f.read()
-        model_id = self._generate_model_id(original_filename, file_content)
+        model_id = model_id or self._generate_model_id(original_filename, file_content)
         ext = os.path.splitext(original_filename)[1]
         fmt = (ext.lstrip('.') or 'bin').lower()
         stored_filename = f"{model_id}{ext}"

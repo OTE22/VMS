@@ -1862,7 +1862,7 @@ function collectFrameSourceConfigFromSchema(sourceType) {
             if (clearBox && clearBox.checked) {
                 value = null;
             } else {
-                value = element.value.trim() || undefined;
+                value = element.value || undefined;
             }
         } else {
             value = element.value.trim() || undefined;
@@ -2431,7 +2431,7 @@ function collectDestinationConfigFromSchema(destType) {
     const destinationType = availableDestinationTypes.find(dt => dt.type === destType);
     
     if (!destinationType || !destinationType.config_schema) {
-        return { config: {}, requiredFields: [] };
+        return { config: {}, requiredFields: [], missingFields: ["Destination schema unavailable"], isValid: false };
     }
     
     const config = {};
@@ -2464,7 +2464,7 @@ function collectDestinationConfigFromSchema(destType) {
             if (clearBox && clearBox.checked) {
                 value = null;
             } else {
-                value = element.value.trim() || undefined;
+                value = element.value || undefined;
             }
         } else {
             value = element.value.trim() || undefined;
@@ -2746,13 +2746,13 @@ function populateDestinationForm(type, config) {
             continue;
         }
         
-        const value = config[field.name];
+        const value = field.name === "baud_rate" ? (config.baud_rate ?? config.baud) : config[field.name];
         
         if (value !== undefined) {
             if (field.type === 'checkbox') {
                 element.checked = Boolean(value);
             } else {
-                element.value = value;
+                element.value = (field.name === "headers" && value && typeof value === "object") ? Object.entries(value).map(([k,v]) => `${k}: ${v}`).join("\n") : value;
             }
         } else if (field.default !== undefined) {
             // Use default value if no config value provided
@@ -3395,17 +3395,17 @@ function populateFrameSourceConfig(frameSource) {
             continue;
         }
         
-        const value = config[field.name];
+        const value = field.name === "baud_rate" ? (config.baud_rate ?? config.baud) : config[field.name];
         
         if (value !== undefined) {
             if (field.type === 'checkbox') {
                 element.checked = !!value;
             } else if (field.type === 'number') {
-                element.value = value;
+                element.value = (field.name === "headers" && value && typeof value === "object") ? Object.entries(value).map(([k,v]) => `${k}: ${v}`).join("\n") : value;
             } else if (field.type === 'select') {
-                element.value = value;
+                element.value = (field.name === "headers" && value && typeof value === "object") ? Object.entries(value).map(([k,v]) => `${k}: ${v}`).join("\n") : value;
             } else {
-                element.value = value;
+                element.value = (field.name === "headers" && value && typeof value === "object") ? Object.entries(value).map(([k,v]) => `${k}: ${v}`).join("\n") : value;
             }
         } else if (field.default !== undefined) {
             // Set default value if no config value is provided

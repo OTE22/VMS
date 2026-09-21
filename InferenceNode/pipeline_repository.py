@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import select, func, delete as sa_delete
 
 from .auth.db import get_session
+from . import pipeline_secrets
 from .data_models import Pipeline, PipelineUserAccess
 
 logger = logging.getLogger("InferenceNode.pipeline_repository")
@@ -38,18 +39,21 @@ def _sync_model_reference(p: Pipeline, config: Optional[dict]) -> dict:
     the column so the two can never diverge (invariant enforced additionally by the
     0005 CHECK on PostgreSQL). Routes/managers never write either field on their own."""
     cfg = dict(config or {})
+    from ResultPublisher.config_validation import normalize_config
+    if "destinations" in cfg:
+        cfg["destinations"] = [{**d, "config": normalize_config(d.get("type"), d.get("config"))} for d in cfg["destinations"]]
     mid = _model_id_from_config(cfg)
-    if mid is not None:
+    if isinstance(cfg.get("model"), dict) and "id" in cfg["model"]:
         p.model_id = mid
-    if p.model_id is not None and isinstance(cfg.get("model"), dict):
+    if isinstance(cfg.get("model"), dict):
         cfg["model"] = dict(cfg["model"]); cfg["model"]["id"] = p.model_id
     return cfg
 
 
 def _row_to_dict(p: Pipeline) -> Dict[str, Any]:
-    cfg = dict(p.config or {})
+    cfg = pipeline_secrets.decrypt(p.config or {})
     # serialize the reflection FROM the canonical column
-    if p.model_id is not None and isinstance(cfg.get("model"), dict):
+    if isinstance(cfg.get("model"), dict):
         cfg["model"] = dict(cfg["model"]); cfg["model"]["id"] = p.model_id
     return {
         "id": p.id,
@@ -148,7 +152,7 @@ class PipelineRepository:
             p = Pipeline(pipeline_id=str(pipeline_id), name=name, description=description,
                          config={}, status=status,
                          owner_id=owner_id, owner_username=owner_username)
-            p.config = _sync_model_reference(p, config or {})
+            p.config = pipeline_secrets.encrypt(_sync_model_reference(p, config or {}))
             s.add(p)
             s.flush()
             return _row_to_dict(p)
@@ -166,7 +170,7 @@ class PipelineRepository:
             if description is not None:
                 p.description = description
             if config is not None:
-                p.config = _sync_model_reference(p, config)
+                p.config = pipeline_secrets.encrypt(_sync_model_reference(p, config))
             if status is not None:
                 p.status = status
             p.updated_at = datetime.utcnow()

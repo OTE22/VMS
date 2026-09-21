@@ -53,8 +53,11 @@ class SerialDestination(BaseResultDestination):
     
     def configure(self, com_port: str, baud: int = 9600, 
                  rate_limit: Optional[float] = None, max_frames: Optional[int] = None,
-                 include_image_data: bool = False, include_result_image: bool = False) -> None:
+                 include_image_data: bool = False, include_result_image: bool = False, baud_rate: Optional[int] = None) -> None:
         """Configure serial destination"""
+        baud = int(baud_rate if baud_rate is not None else baud)
+        if baud <= 0:
+            raise ValueError("Baud rate must be positive")
         try:
             import serial
             

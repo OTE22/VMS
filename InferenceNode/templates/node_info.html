@@ -167,7 +167,8 @@
                     
                     <div class="mb-3">
                         <label for="webPort" class="form-label">Web Interface Port</label>
-                        <input type="number" class="form-control" id="webPort" min="1000" max="65535" value="5000">
+                        <input type="number" class="form-control" id="webPort" readonly min="1000" max="65535" value="5000">
+                        <div class="form-text">Configured by the deployment; cannot be changed here.</div>
                     </div>
                     
                     <button type="submit" class="btn btn-primary w-100">

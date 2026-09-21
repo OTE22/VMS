@@ -431,7 +431,8 @@ class WebhookDestination(BaseResultDestination):
         # Configure webhook-specific parameters
         self.url_template = url  # Store original template
         self.url = url
-        self.headers = headers or {"Content-Type": "application/json"}
+        from ResultPublisher.config_validation import normalize_config
+        self.headers = normalize_config("webhook", {"headers": headers})["headers"] or {"Content-Type": "application/json"}
         if not math.isfinite(float(timeout)) or not 0 < float(timeout) <= 300:
             raise ValueError("Webhook timeout must be in (0, 300] seconds")
         self.timeout = float(timeout)

@@ -391,12 +391,8 @@ document.getElementById('telemetryConfigForm').addEventListener('submit', async 
         if (response.ok) {
             showAlert('success', 'Telemetry configuration updated successfully!');
             
-            // Restart telemetry updates
-            if (config.enabled) {
-                // MQTT publish_interval is the broker cadence, not the chart poll rate
-            } else {
-                stopTelemetryUpdates();
-            }
+            // Live charts are independent of whether MQTT publishing is enabled.
+            startTelemetryUpdates();
         } else {
             showAlert('error', `Failed to update configuration: ${result.error}`);
         }
