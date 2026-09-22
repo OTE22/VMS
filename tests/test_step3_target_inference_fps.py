@@ -151,6 +151,7 @@ def test_detection_config_override_is_validated():
     for attr, val in (("MIN_CONFIDENCE", 0.4), ("MIN_CONFIDENCE_FOR_PERSON", 0.5),
                       ("IMMEDIATE_SEND_CONFIDENCE", 0.9), ("SEND_BUFFER_SECONDS", 1.0),
                       ("MAX_COLLECT_SECONDS", 3.0), ("TRACK_TTL_SECONDS", 120.0),
+                      ("PERSON_CAPTURE_COUNT", 3), ("PERSON_CAPTURE_INTERVAL_SECONDS", 2.0),
                       ("TRACK_LOST_TIMEOUT_SECONDS", 2.0), ("PUBLISH_MAX_RETRIES", 5),
                       ("PUBLISH_RETRY_DELAY_SECONDS", 1.0), ("PUBLISH_RETRY_BACKOFF", 2.0),
                       ("PUBLISHER_SHUTDOWN_TIMEOUT_SECONDS", 5.0), ("PUBLISH_QUEUE_SIZE", 1000),

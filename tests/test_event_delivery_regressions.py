@@ -126,6 +126,57 @@ def test_untracked_failure_uses_backoff():
     assert p._register_iou_candidate(d, None, time.time()) is None
 
 
+def test_person_gets_three_fresh_views_then_cooldown():
+    destination = Destination('d', images=True)
+    p = pipeline(destination)
+    now = 1000.0
+    for capture in range(3):
+        frame = np.full((12, 12, 3), capture * 80, dtype=np.uint8)
+        p._update_track_candidate(detection(), frame, now)
+        jobs = p._collect_ready_tracks(now)
+        assert len(jobs) == 1
+        assert np.array_equal(jobs[0]['frame'], frame)
+        with patch('InferenceNode.pipeline.time.time', return_value=now):
+            p._deliver_job(jobs[0])
+        p._update_track_candidate(detection(), frame, now + 1)
+        assert p._collect_ready_tracks(now + 1) == []
+        now += 2
+    assert len({payload['event_id'] for payload in destination.payloads}) == 3
+    assert len({payload['image'] for payload in destination.payloads}) == 3
+    p._update_track_candidate(detection(), frame, now)
+    assert p._collect_ready_tracks(now) == []
+    # A different tracker ID is still eligible during the original ID's cooldown.
+    p._update_track_candidate(detection(8), frame, now)
+    assert len(p._collect_ready_tracks(now)) == 1
+    now = 1125.0
+    p._update_track_candidate(detection(), frame, now)
+    jobs = p._collect_ready_tracks(now)
+    assert len(jobs) == 1
+    with patch('InferenceNode.pipeline.time.time', return_value=now):
+        p._deliver_job(jobs[0])
+    assert p._track_last_sent[p._make_track_key(detection())]['capture_count'] == 1
+
+
+@pytest.mark.parametrize('class_name,capture_count', [('car', 3), ('person', 1)])
+def test_followup_capture_is_person_only_and_can_be_disabled(class_name, capture_count):
+    p = pipeline(Destination('d'))
+    p._apply_detection_config({'person_capture_count': capture_count})
+    det = dict(detection(), class_name=class_name)
+    p._update_track_candidate(det, None, 1000)
+    jobs = p._collect_ready_tracks(1000)
+    with patch('InferenceNode.pipeline.time.time', return_value=1000):
+        p._deliver_job(jobs[0])
+    p._update_track_candidate(det, None, 1003)
+    assert p._collect_ready_tracks(1003) == []
+
+
+@pytest.mark.parametrize('value', [0, -1, 4, 'bad', float('nan'), float('inf')])
+def test_person_capture_count_rejects_unbounded_or_invalid_values(value):
+    p = pipeline()
+    p._apply_detection_config({'person_capture_count': value})
+    assert p.PERSON_CAPTURE_COUNT == 3
+
+
 def test_encode_once_across_retries_and_use_event_frame():
     d = Destination('d', ('failed', 'success'), images=True)
     d.include_result_image = True

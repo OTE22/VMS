@@ -139,6 +139,10 @@ class InferencePipeline:
         self.MAX_COLLECT_SECONDS = 3.0  # Hard cap: send after this long even if confidence keeps improving
         self.IMMEDIATE_SEND_CONFIDENCE = 0.90  # Send right away once a track reaches this confidence
         self.TRACK_TTL_SECONDS = 120.0  # Cooldown (seconds) after a successful send before the same track can be sent again
+        # Person confidence says nothing about face visibility. Allow fresh views
+        # before the long cooldown; HTTP acceptance is not face recognition.
+        self.PERSON_CAPTURE_COUNT = 3
+        self.PERSON_CAPTURE_INTERVAL_SECONDS = 2.0
         self.TRACK_LOST_TIMEOUT_SECONDS = 2.0  # Publish a track's best if it hasn't been seen for this long (person left frame)
         self.DEDUP_IOU_THRESHOLD = 0.4
         self.DEDUP_TTL_SECONDS = 4.0
@@ -275,9 +279,13 @@ class InferencePipeline:
                 self._terminal_tracks[track_key] = now
                 return
 
-            # Still within success cooldown -> ignore (already delivered recently)
-            if sent_rec is not None and (now - sent_rec.get('sent_at', 0)) < self.TRACK_TTL_SECONDS:
-                return
+            if sent_rec is not None:
+                cooldown = self.TRACK_TTL_SECONDS
+                if (str(class_name).lower() == 'person'
+                        and sent_rec.get('capture_count', self.PERSON_CAPTURE_COUNT) < self.PERSON_CAPTURE_COUNT):
+                    cooldown = min(cooldown, self.PERSON_CAPTURE_INTERVAL_SECONDS)
+                if (now - sent_rec.get('sent_at', 0)) < cooldown:
+                    return
 
             # Already queued/publishing/retrying, or in post-failure backoff -> don't re-collect
             if track_key in self._pending_track_keys:
@@ -684,7 +692,11 @@ class InferencePipeline:
 
         with self._tracking_lock:
             if track_key is not None:
-                self._track_last_sent[track_key] = {'sent_at': now, 'bbox': bbox}
+                previous = self._track_last_sent.get(track_key, {})
+                count = (previous.get('capture_count', 0)
+                         if now - previous.get('sent_at', 0) < self.TRACK_TTL_SECONDS else 0)
+                self._track_last_sent[track_key] = {
+                    'sent_at': now, 'bbox': bbox, 'capture_count': count + 1}
                 self._pending_track_keys.discard(track_key)
                 self._failed_backoff.pop(track_key, None)
             if job.get('iou_key') is not None:
@@ -1712,6 +1724,9 @@ class InferencePipeline:
         self.SEND_BUFFER_SECONDS = num('send_buffer_seconds', self.SEND_BUFFER_SECONDS, 0.0)
         self.MAX_COLLECT_SECONDS = num('max_collect_seconds', self.MAX_COLLECT_SECONDS, 0.0)
         self.TRACK_TTL_SECONDS = num('track_ttl_seconds', self.TRACK_TTL_SECONDS, 0.0)
+        self.PERSON_CAPTURE_COUNT = int(num('person_capture_count', self.PERSON_CAPTURE_COUNT, 1, 3))
+        self.PERSON_CAPTURE_INTERVAL_SECONDS = num(
+            'person_capture_interval_seconds', self.PERSON_CAPTURE_INTERVAL_SECONDS, 1.0)
         self.TRACK_LOST_TIMEOUT_SECONDS = num('track_lost_timeout_seconds', self.TRACK_LOST_TIMEOUT_SECONDS, 0.0)
         self.PUBLISH_MAX_RETRIES = int(num('publish_max_retries', self.PUBLISH_MAX_RETRIES, 0, 20))
         self.PUBLISH_RETRY_DELAY_SECONDS = num('publish_retry_delay_seconds', self.PUBLISH_RETRY_DELAY_SECONDS, 0.0, 30.0)
