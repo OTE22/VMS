@@ -1,0 +1,6 @@
+{
+  "release_image": "armyeye-vms:video-upload-20260921t103353z",
+  "rollback_image": "armyeye-vms:before-video-upload-20260921t103353z",
+  "previous_image_id": "sha256:5bb2482df84b937d9ce58f7fe660af2674200e1fe4442ee81ff830ee52393c9e",
+  "template_sha256": "2ff446764754623a7fba41b3a0dde9498bfabec81f455373f260b42c26daa850"
+}

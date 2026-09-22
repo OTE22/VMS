@@ -1,0 +1,6 @@
+{
+  "release_image": "armyeye-vms:camera-autofill-20260922t043035z",
+  "rollback_image": "armyeye-vms:before-camera-autofill-20260922t043035z",
+  "previous_image_id": "sha256:f23e885e0f5b1580a804302075b4facc5c28755aecdfec29144071730e3bd204",
+  "template_sha256": "b35c0da617f677179d9cf3d08894ddbd4c643fbd98c3e5b7bfa2b955ec2f4108"
+}
