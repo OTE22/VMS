@@ -635,3 +635,105 @@ def test_models_special_character_ids_are_deletable(live_forms):
     response = models_upload(live_forms, "operator's #model-"+uuid.uuid4().hex+'.pt', model_checkpoint_bytes('special'))
     assert response.status_code == 200
     assert live_forms['send']('/api/models/'+quote(response.json['model_id'], safe=''), method='DELETE').status_code==200
+
+# Publisher audit regressions: real routes and PostgreSQL persistence.
+def publisher_fixture(env, **overrides):
+    body = {'name': uuid.uuid4().hex, 'type': 'mqtt', 'config': {
+        'server': 'broker.invalid', 'port': 1883, 'topic': 'faces', 'password': 'isolated-secret'}}
+    body.update(overrides)
+    r = env['send']('/api/publisher/favorites', body)
+    assert r.status_code == 200, r.json
+    return r.json['favorite']['id']
+
+
+def test_publisher_missing_key_edit_preserves_ciphertext(live_forms):
+    from InferenceNode import config_secrets as cs
+    pid = publisher_fixture(live_forms)
+    before = one(live_forms, 'SELECT config FROM publishers WHERE publisher_id=:id', id=pid)['config']
+    cs.reload_keys('/nonexistent')
+    try:
+        r = live_forms['send']('/api/publisher/favorites/'+pid, {'config': {'password': '***'}}, method='PUT')
+        assert r.status_code == 503
+        assert one(live_forms, 'SELECT config FROM publishers WHERE publisher_id=:id', id=pid)['config'] == before
+    finally:
+        assert cs.reload_keys()
+
+
+@pytest.mark.parametrize('typ,cfg', [('no-plugin', {}), ('mqtt', {}), ('mqtt', {'server':'b','topic':'x','port':-1}), ('null', {'rate_limit':-1}), ('webhook', {'headers':'bad header'})])
+def test_publisher_invalid_form_is_400_without_row(live_forms, typ, cfg):
+    name = uuid.uuid4().hex
+    r = live_forms['send']('/api/publisher/favorites', {'name':name,'type':typ,'config':cfg})
+    assert r.status_code == 400, r.json
+    assert one(live_forms, 'SELECT count(*) n FROM publishers WHERE name=:name', name=name)['n'] == 0
+
+
+def test_publisher_partial_update_and_type_switch(live_forms):
+    from InferenceNode import publisher_store as pst
+    pid = publisher_fixture(live_forms)
+    assert live_forms['send']('/api/publisher/favorites/'+pid, {'config':{'password':'replacement'}}, method='PUT').status_code == 200
+    config = pst.get_publisher(pid,runtime=True)['config']
+    assert config['server']=='broker.invalid' and config['password']=='replacement'
+    assert live_forms['send']('/api/publisher/favorites/'+pid, {'type':'null','config':{}}, method='PUT').status_code == 200
+    assert pst.get_publisher(pid,runtime=True)['config']=={}
+
+
+def test_publisher_concurrent_names_are_unique(live_forms):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    barrier=Barrier(2); name=uuid.uuid4().hex
+    cookie=live_forms['client'].get_cookie('session').value
+    def create(_):
+        with live_forms['node'].app.test_client() as client:
+            client.set_cookie('session',cookie);barrier.wait(timeout=10)
+            return client.post('/api/publisher/favorites',json={'name':name,'type':'null','config':{}},headers={'X-CSRFToken':live_forms['csrf']}).status_code
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sorted(pool.map(create,range(2)))==[200,409]
+    assert one(live_forms,'SELECT count(*) n FROM publishers WHERE name=:name',name=name)['n']==1
+
+
+def test_publisher_serialized_edits_preserve_new_password(live_forms,monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from InferenceNode import publisher_store as pst, config_secrets as cs
+    pid=publisher_fixture(live_forms);real=cs.decrypt_config;entered=Event();release=Event()
+    def hold(config):
+        result=real(config)
+        if isinstance(config,dict) and 'server' in config and not entered.is_set():
+            entered.set();assert release.wait(10)
+        return result
+    monkeypatch.setattr(cs,'decrypt_config',hold)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a=pool.submit(pst.update_publisher,pid,config={'password':'new-secret'})
+        assert entered.wait(10)
+        b=pool.submit(pst.update_publisher,pid,config={'server':'changed.invalid','password':'***'})
+        release.set();a.result(timeout=15);b.result(timeout=15)
+    config=pst.get_publisher(pid,runtime=True)['config']
+    assert config['password']=='new-secret' and config['server']=='changed.invalid'
+
+
+def test_publisher_test_reports_missing_ids(live_forms):
+    pid=publisher_fixture(live_forms,type='null',config={});missing=str(uuid.uuid4())
+    r=live_forms['send']('/api/publisher/test-favorites',{'favorite_ids':[pid,missing],'message':{'test':True}})
+    assert r.status_code==502 and set(r.json['results'])=={pid,missing}
+    assert r.json['results'][pid]['status']=='success'
+
+
+def test_publisher_webhook_test_requires_and_supplies_pipeline(live_forms,monkeypatch):
+    import InferenceNode.inference_node as module
+    pid=publisher_fixture(live_forms,type='webhook',config={'url':'http://receiver.invalid'})
+    data={'favorite_ids':[pid],'message':{'test':True}}
+    assert live_forms['send']('/api/publisher/test-favorites',data).status_code==400
+    pipeline_id, _ = pipeline(live_forms)
+    # Use the real saved pipeline ID. Stub delivery only; route and database remain real.
+    seen=[]
+    class Destination:
+        def set_context_variables(self,**kw):self.context=kw
+        def configure(self,**kw):pass
+        def publish_once(self,message):seen.append((self.context,message));return {'status':'success'}
+        def stop_queue(self):pass
+        def close(self):pass
+    monkeypatch.setattr(module,'ResultDestination',lambda typ:Destination())
+    data['pipeline_id']=pipeline_id
+    r=live_forms['send']('/api/publisher/test-favorites',data)
+    assert r.status_code==200,r.json
+    assert seen[0][0]['pipeline_id']==pipeline_id==seen[0][1]['pipeline_id']

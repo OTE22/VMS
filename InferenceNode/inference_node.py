@@ -1660,19 +1660,23 @@ class InferenceNode:
         def test_publish_favorites():
             """Test publishing a message to selected favorite destinations"""
             try:
-                data = request.get_json()
+                data = request.get_json() or {}
+                if not isinstance(data, dict):
+                    return jsonify({'error': 'Request must be an object'}), 400
                 message = data.get('message', {})
                 favorite_ids = data.get('favorite_ids', [])
                 
-                if not message:
+                if not isinstance(message, dict) or not message:
                     return jsonify({'error': 'No message provided'}), 400
                 
-                if not favorite_ids:
+                if not isinstance(favorite_ids, list) or not favorite_ids or any(not isinstance(i, str) for i in favorite_ids):
                     return jsonify({'error': 'No favorite destinations selected'}), 400
                 
                 # Get selected favorites (RUNTIME view: decrypted secrets, PostgreSQL)
                 from InferenceNode import publisher_store as _pst
                 selected_favorites = []
+                results = {}
+                favorite_ids = list(dict.fromkeys(favorite_ids))
                 for fav_id in favorite_ids:
                     fav = _pst.get_publisher(fav_id, runtime=True)
                     if fav and fav.get('kind') == 'favorite':
@@ -1680,17 +1684,19 @@ class InferenceNode:
                             return jsonify({'error': f'Favorite {fav_id}: encryption key unavailable, '
                                                      f'cannot use its credentials'}), 503
                         selected_favorites.append(fav)
+                    else:
+                        results[fav_id] = {'status': 'error', 'error': 'Favorite not found'}
                 
-                if not selected_favorites:
-                    return jsonify({
-                        'status': 'warning',
-                        'message': 'No valid favorite destinations found',
-                        'destinations_count': 0
-                    })
-                
+                pipeline_id = data.get('pipeline_id')
+                if any(f['type'] == 'webhook' for f in selected_favorites):
+                    from InferenceNode.pipeline_repository import repository
+                    if not isinstance(pipeline_id, str) or not repository.get(pipeline_id):
+                        return jsonify({'error': 'Select an existing pipeline for webhook testing'}), 400
+
                 # Add metadata to the test message
                 test_message = {
                     'test': True,
+                    'pipeline_id': pipeline_id,
                     'node_id': self.node_id,
                     'node_name': self.node_name,
                     'timestamp': data.get('timestamp') or message.get('timestamp'),
@@ -1698,12 +1704,12 @@ class InferenceNode:
                 }
                 
                 # One synchronous attempt per favorite; report failures individually.
-                results = {}
                 for favorite in selected_favorites:
                     destination = None
                     try:
                         destination = ResultDestination(favorite['type'])
-                        destination.set_context_variables(node_id=self.node_id, node_name=self.node_name)
+                        destination.set_context_variables(node_id=self.node_id, node_name=self.node_name,
+                                                          pipeline_id=pipeline_id, api_port=str(self.port), port=str(self.port))
                         destination.configure(**favorite['config'])
                         results[favorite['id']] = destination.publish_once(test_message)
                     except Exception as exc:
@@ -2009,25 +2015,32 @@ class InferenceNode:
                 from InferenceNode import publisher_store as _pst
                 from InferenceNode.config_secrets import SecretsUnavailable
                 data = request.get_json() or {}
-                name = (data.get('name') or '').strip()
+                if not isinstance(data, dict):
+                    return jsonify({'error': 'Request must be an object'}), 400
+                if ('config' in data and not isinstance(data['config'], dict)) or ('type' in data and (not isinstance(data['type'], str) or not data['type'])) or ('description' in data and not isinstance(data['description'], str)):
+                    return jsonify({'error': 'Invalid favorite fields'}), 400
+                name = data.get('name') or ''
+                if not isinstance(name, str):
+                    return jsonify({'error': 'Name must be text'}), 400
+                name = name.strip()
                 destination_type = data.get('type')
                 config = data.get('config') or {}
                 if not name:
                     return jsonify({'error': 'Name is required'}), 400
                 if not destination_type:
                     return jsonify({'error': 'Destination type is required'}), 400
-                for existing in _pst.list_publishers(kind='favorite'):
-                    if (existing.get('name') or '').lower() == name.lower():
-                        return jsonify({'error': f'A favorite named "{name}" already exists'}), 400
                 try:
                     favorite = _pst.create_publisher(name=name, type=destination_type, config=config,
                                                      kind='favorite', description=data.get('description') or '',
-                                                     created_by=getattr(current_user, 'id', None))
+                                                     created_by=getattr(current_user, 'id', None), validate=True)
                 except SecretsUnavailable:
                     return jsonify({'error': 'Configuration encryption key unavailable; refusing to store a '
                                              'secret in clear (set ARMYEYE_CONFIG_ENCRYPTION_KEY_FILE)'}), 503
                 return jsonify({'status': 'saved', 'favorite': favorite,
                                 'message': f'Configuration saved as favorite: {name}'})
+            except ValueError as e:
+                from InferenceNode.publisher_store import FavoriteConflict
+                return jsonify({'error': str(e)}), (409 if isinstance(e, FavoriteConflict) else 400)
             except Exception as e:
                 self.logger.error(f"Save favorite error: {str(e)}")
                 return jsonify({'error': str(e)}), 500
@@ -2044,6 +2057,9 @@ class InferenceNode:
                 _pst.delete_publisher(favorite_id)
                 return jsonify({'status': 'deleted', 'id': favorite_id,
                                 'message': f'Favorite "{fav.get("name")}" deleted successfully'})
+            except ValueError as e:
+                from InferenceNode.publisher_store import FavoriteConflict
+                return jsonify({'error': str(e)}), (409 if isinstance(e, FavoriteConflict) else 400)
             except Exception as e:
                 self.logger.error(f"Delete favorite error: {str(e)}")
                 return jsonify({'error': str(e)}), 500
@@ -2060,22 +2076,27 @@ class InferenceNode:
                 if fav is None or fav.get('kind') != 'favorite':
                     return jsonify({'error': 'Favorite not found'}), 404
                 data = request.get_json() or {}
-                new_name = None
-                if 'name' in data:
-                    new_name = (data.get('name') or '').strip()
-                    if not new_name:
-                        return jsonify({'error': 'Name cannot be empty'}), 400
-                    for other in _pst.list_publishers(kind='favorite'):
-                        if other['id'] != favorite_id and (other.get('name') or '').lower() == new_name.lower():
-                            return jsonify({'error': f'A favorite named "{new_name}" already exists'}), 400
+                if not isinstance(data, dict):
+                    return jsonify({'error': 'Request must be an object'}), 400
+                if ('config' in data and not isinstance(data['config'], dict)) or ('type' in data and (not isinstance(data['type'], str) or not data['type'])) or ('description' in data and not isinstance(data['description'], str)):
+                    return jsonify({'error': 'Invalid favorite fields'}), 400
+                new_name = data.get('name') if 'name' in data else None
+                if 'name' in data and (not isinstance(new_name, str) or not new_name.strip()):
+                    return jsonify({'error': 'Name must be nonempty text'}), 400
                 try:
                     updated = _pst.update_publisher(favorite_id, name=new_name, type=data.get('type'),
                                                     description=data.get('description'),
-                                                    config=data.get('config') if 'config' in data else None)
+                                                    config=data.get('config') if 'config' in data else None,
+                                                    validate=True, replace_config=data.get('replace_config') is True)
                 except SecretsUnavailable:
                     return jsonify({'error': 'Configuration encryption key unavailable'}), 503
+                if updated is None:
+                    return jsonify({'error': 'Favorite not found'}), 404
                 return jsonify({'status': 'updated', 'favorite': updated,
                                 'message': f'Favorite "{updated["name"]}" updated successfully'})
+            except ValueError as e:
+                from InferenceNode.publisher_store import FavoriteConflict
+                return jsonify({'error': str(e)}), (409 if isinstance(e, FavoriteConflict) else 400)
             except Exception as e:
                 self.logger.error(f"Update favorite error: {str(e)}")
                 return jsonify({'error': str(e)}), 500

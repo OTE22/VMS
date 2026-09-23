@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from ResultPublisher.config_validation import normalize_config
 from . import config_secrets
@@ -21,6 +21,26 @@ from .data_models import Publisher
 from .pipeline_store import sanitize_config, unredact_into
 
 logger = logging.getLogger("InferenceNode.publisher_store")
+
+
+class FavoriteConflict(ValueError):
+    pass
+
+
+def _lock_favorites(session):
+    # Serialize name checks and edits in the same transaction as their writes.
+    if session.get_bind().dialect.name == 'postgresql':
+        session.execute(text('SELECT pg_advisory_xact_lock(728194620)'))
+
+
+def _check_name(session, name, publisher_id=None):
+    if not isinstance(name, str) or not name.strip() or len(name.strip()) > 255:
+        raise ValueError('Favorite name must contain 1–255 characters')
+    name = name.strip()
+    rows = session.execute(select(Publisher.publisher_id, Publisher.name).where(Publisher.kind == 'favorite')).all()
+    if any(pid != publisher_id and (other or '').casefold() == name.casefold() for pid, other in rows):
+        raise FavoriteConflict('A favorite with this name already exists')
+    return name
 
 
 def _row_public(p: Publisher) -> dict:
@@ -61,12 +81,18 @@ def get_publisher(publisher_id: str, *, runtime: bool = False, session=None) -> 
 def create_publisher(*, name: str, type: str, config: dict, kind: str = "favorite",
                      enabled: bool = True, created_by: Optional[int] = None,
                      publisher_id: Optional[str] = None, description: Optional[str] = None,
-                     session=None) -> dict:
+                     session=None, validate=False) -> dict:
     """Secrets are encrypted before the row is written; a plaintext secret can never
     reach PostgreSQL (SecretsUnavailable is raised when no key is loaded)."""
+    if validate:
+        from ResultPublisher.config_validation import validate_favorite_config
+        config = validate_favorite_config(type, config)
     enc = config_secrets.encrypt_config(normalize_config(type, config))
     assert not config_secrets.contains_plaintext_secret(enc)
     with get_session(session) as s:
+        if kind == 'favorite':
+            _lock_favorites(s)
+            name = _check_name(s, name)
         p = Publisher(publisher_id=publisher_id or str(uuid.uuid4()), name=name, type=type, kind=kind,
                       enabled=bool(enabled), config=enc, created_by=created_by, description=description)
         s.add(p); s.flush()
@@ -74,27 +100,39 @@ def create_publisher(*, name: str, type: str, config: dict, kind: str = "favorit
 
 
 def update_publisher(publisher_id: str, *, name=None, description=None, type=None,
-                     config: Optional[dict] = None, enabled=None, session=None) -> Optional[dict]:
-    """Redaction-safe merge (unredact_into: omitted/sentinel -> keep, new -> replace,
-    null -> clear) against the DECRYPTED stored config, then re-encrypt. Honors `type`."""
+                     config: Optional[dict] = None, enabled=None, session=None,
+                     validate=False, replace_config=False) -> Optional[dict]:
+    """Partial updates preserve omitted fields; full forms explicitly replace config."""
     with get_session(session) as s:
-        p = s.execute(select(Publisher).where(Publisher.publisher_id == publisher_id)).scalar_one_or_none()
+        _lock_favorites(s)
+        p = s.execute(select(Publisher).where(Publisher.publisher_id == publisher_id).with_for_update()).scalar_one_or_none()
         if p is None:
             return None
         if name is not None:
-            p.name = name
+            p.name = _check_name(s, name, publisher_id) if p.kind == 'favorite' else name
         if description is not None:
             p.description = description
-        if type is not None:
-            p.type = type
+        new_type = type if type is not None else p.type
+        if config is not None or new_type != p.type:
+            stored, ok = config_secrets.decrypt_config(p.config or {})
+            if not ok:
+                raise config_secrets.SecretsUnavailable('Existing credentials could not be decrypted')
+            incoming = config if config is not None else {}
+            if not isinstance(incoming, dict):
+                raise ValueError('Configuration must be an object')
+            if new_type != p.type:
+                stored = {}
+            merged = unredact_into(stored, incoming)
+            if not replace_config and new_type == p.type:
+                merged = {**stored, **merged}
+            if validate:
+                from ResultPublisher.config_validation import validate_favorite_config
+                merged = validate_favorite_config(new_type, merged)
+            p.config = config_secrets.encrypt_config(normalize_config(new_type, merged))
+            assert not config_secrets.contains_plaintext_secret(p.config)
+        p.type = new_type
         if enabled is not None:
             p.enabled = bool(enabled)
-        if config is not None:
-            stored_plain, _ok = config_secrets.decrypt_config(p.config or {})
-            merged = unredact_into(stored_plain, config)
-            enc = config_secrets.encrypt_config(normalize_config(p.type, merged))
-            assert not config_secrets.contains_plaintext_secret(enc)
-            p.config = enc
         p.updated_at = datetime.utcnow()
         s.flush()
         return _row_public(p)

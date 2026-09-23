@@ -228,6 +228,9 @@
             </div>
             <div class="card-body">
                 <form id="testPublishForm">
+                    <label for="testPipeline" class="form-label">Pipeline for webhook tests</label>
+                    <select id="testPipeline" class="form-select mb-2"><option value="">Loading pipelines...</option></select>
+                    <div class="form-text mb-2">Webhook tests send to the selected pipeline. Receiver validation still applies to your message.</div>
                     <div class="mb-3">
                         <label for="testMessage" class="form-label">Test Message</label>
                         <textarea class="form-control" id="testMessage" rows="4" placeholder="Enter test data...">
@@ -254,7 +257,7 @@
         <div class="card mb-4">
             <div class="card-header">
                 <h5 class="card-title mb-0">
-                    <i class="fas fa-chart-bar me-2"></i>Publishing Stats
+                    <i class="fas fa-chart-bar me-2"></i>Test Results (this page session)
                 </h5>
             </div>
             <div class="card-body">
@@ -262,7 +265,7 @@
                     <div class="col-6">
                         <div class="border rounded p-2 mb-2">
                             <h4 id="totalPublished" class="text-success mb-1">0</h4>
-                            <small class="text-muted">Total Published</small>
+                            <small class="text-muted">Successful Tests</small>
                         </div>
                     </div>
                     <div class="col-6">
@@ -350,6 +353,35 @@
 let publishStats = { total: 0, errors: 0 };
 let availableDestinationTypes = [];
 let favoriteConfigs = [];
+
+let publisherPending = false;
+let favoritesSequence = 0;
+let publisherDisabled = [];
+function publisherAlert(type, message) { showAlert(type, esc(message)); }
+function beginPublisherOperation() {
+    if (publisherPending) return false;
+    publisherPending = true;
+    favoritesSequence++;
+    publisherDisabled = Array.from(document.querySelectorAll('#destinationForm input, #destinationForm textarea, #destinationForm button, #destinationForm select, #favoritesList button, #testPublishForm button')).map(el => [el, el.disabled]);
+    publisherDisabled.forEach(([el]) => { el.disabled = true; });
+    return true;
+}
+function endPublisherOperation() {
+    publisherPending = false;
+    publisherDisabled.forEach(([el, disabled]) => { el.disabled = disabled; });
+    publisherDisabled = [];
+    if (!document.getElementById('destinationType').value)
+        document.querySelector('#destinationForm button[type="submit"]').disabled = true;
+}
+async function loadTestPipelines() {
+    const select = document.getElementById('testPipeline');
+    try {
+        const response = await fetch('/api/pipelines');
+        if (!response.ok) throw new Error('Could not load pipelines for webhook testing');
+        const data = await response.json();
+        select.innerHTML = '<option value="">Select pipeline for webhook tests</option>' + data.pipelines.map(p => `<option value="${esc(p.id)}">${esc(p.name || p.id)}</option>`).join('');
+    } catch (error) { publisherAlert('error', error.message); }
+}
 
 // Filter function for button selectors
 function filterButtonSelector(selectorId, searchTerm) {
@@ -440,6 +472,7 @@ function clearQuickSearchBadges(inputId) {
 
 // Button selector function
 function selectDestinationType(value) {
+    if (publisherPending) return;
     // Update hidden input
     document.getElementById('destinationType').value = value;
     
@@ -448,7 +481,8 @@ function selectDestinationType(value) {
     selector.querySelectorAll('.button-selector-item').forEach(item => {
         item.classList.remove('active');
     });
-    selector.querySelector(`[data-value="${value}"]`).classList.add('active');
+    const selected = Array.from(selector.querySelectorAll('[data-value]')).find(el => el.dataset.value === value);
+    if (selected) selected.classList.add('active');
     
     // Update configuration
     updateConfigForm();
@@ -484,7 +518,7 @@ function generateFormFieldsFromSchema(schema, prefix = '') {
                 fieldHtml = `
                     <div class="col-6">
                         <label for="${fieldId}" class="form-label">${field.label}${requiredStar}</label>
-                        <input type="password" class="form-control" id="${fieldId}" 
+                        <input type="password" autocomplete="new-password" class="form-control" id="${fieldId}" 
                                placeholder="${field.placeholder || ''}" ${required}
                                title="${field.description || ''}">
                         <label class="form-check-label"><input type="checkbox" id="${fieldId}__clear"> Clear stored credential</label>
@@ -734,6 +768,7 @@ function updateConfigForm() {
 
 document.getElementById('testPublishForm').addEventListener('submit', async function(e) {
     e.preventDefault();
+    if (!beginPublisherOperation()) return;
     try {
         const message = JSON.parse(document.getElementById('testMessage').value);
         if (!message || typeof message !== 'object' || Array.isArray(message)) throw new Error('Message must be a JSON object');
@@ -741,17 +776,21 @@ document.getElementById('testPublishForm').addEventListener('submit', async func
         if (!favorite_ids.length) throw new Error('Select at least one favorite');
         const response = await fetch('/api/publisher/test-favorites', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({message, favorite_ids})
+            body: JSON.stringify({message, favorite_ids, pipeline_id: document.getElementById('testPipeline').value})
         });
         const result = await response.json();
-        const details = Object.entries(result.results || {}).map(([id, r]) => `${id}: ${r.status}`).join(', ');
-        showAlert(response.ok ? 'success' : 'error', (result.error || result.message) + (details ? ': ' + details : ''));
-    } catch (error) { showAlert('error', error.message); }
+        const details = Object.entries(result.results || {}).map(([id, r]) => `${id}: ${r.status}${r.error ? ' (' + r.error + ')' : ''}`).join(', ');
+        Object.values(result.results || {}).forEach(r => { if (r.status === 'success') publishStats.total++; else publishStats.errors++; });
+        document.getElementById('totalPublished').textContent = publishStats.total;
+        document.getElementById('publishErrors').textContent = publishStats.errors;
+        publisherAlert(response.ok && result.status === 'success' ? 'success' : 'error', (result.error || result.message) + (details ? ': ' + details : ''));
+    } catch (error) { publisherAlert('error', error.message); } finally { endPublisherOperation(); }
 });
 
 // Handle destination form submission
 document.getElementById('destinationForm').addEventListener('submit', async function(e) {
     e.preventDefault();
+    if (publisherPending) return;
     
     const name = document.getElementById('favoriteName').value.trim();
     const description = document.getElementById('favoriteDescription').value.trim();
@@ -759,7 +798,7 @@ document.getElementById('destinationForm').addEventListener('submit', async func
     const editingId = this.dataset.editingId; // Check if we're editing an existing favorite
     
     if (!name) {
-        showAlert('error', 'Please enter a name for the favorite');
+        publisherAlert('error', 'Please enter a name for the favorite');
         return;
     }
     
@@ -769,18 +808,19 @@ document.getElementById('destinationForm').addEventListener('submit', async func
     const configResult = collectConfigFromSchema(type);
     
     if (!configResult.isValid) {
-        showAlert('error', `Missing required fields: ${configResult.missingFields.join(', ')}`);
+        publisherAlert('error', `Missing required fields: ${configResult.missingFields.join(', ')}`);
         return;
     }
     
     config = configResult.config;
+    if (!beginPublisherOperation()) return;
     
     try {
         let response, url, method;
         
         if (editingId) {
             // Update existing favorite
-            url = `/api/publisher/favorites/${editingId}`;
+            url = `/api/publisher/favorites/${encodeURIComponent(editingId)}`;
             method = 'PUT';
         } else {
             // Create new favorite
@@ -797,7 +837,7 @@ document.getElementById('destinationForm').addEventListener('submit', async func
                 name: name,
                 description: description,
                 type: type,
-                config: config
+                config: config, replace_config: true
             })
         });
         
@@ -805,7 +845,7 @@ document.getElementById('destinationForm').addEventListener('submit', async func
         
         if (response.ok) {
             const action = editingId ? 'updated' : 'saved';
-            showAlert('success', `Favorite "${name}" ${action} successfully!`);
+            publisherAlert('success', `Favorite "${name}" ${action} successfully!`);
             loadFavoriteConfigs(); // Reload favorites list
             
             // Reset form and clear editing state
@@ -818,11 +858,11 @@ document.getElementById('destinationForm').addEventListener('submit', async func
             
             updateConfigForm();
         } else {
-            showAlert('error', `Failed to ${editingId ? 'update' : 'save'} favorite: ${result.error}`);
+            publisherAlert('error', `Failed to ${editingId ? 'update' : 'save'} favorite: ${result.error}`);
         }
     } catch (error) {
-        showAlert('error', `Failed to ${editingId ? 'update' : 'save'} favorite: ${error.message}`);
-    }
+        publisherAlert('error', `Failed to ${editingId ? 'update' : 'save'} favorite: ${error.message}`);
+    } finally { endPublisherOperation(); }
 });
 
 // Add destination to the list
@@ -866,6 +906,7 @@ function updateDestinationTypeSelector(destinationTypes) {
 document.addEventListener('DOMContentLoaded', function() {
     loadAvailableDestinationTypes();
     loadFavoriteConfigs();
+    loadTestPipelines();
 });
 
 // Load available destination types with their schemas
@@ -881,10 +922,10 @@ async function loadAvailableDestinationTypes() {
             console.log('Available destination types:', availableDestinationTypes);
             updateDestinationTypeSelector(data.destination_types);
         } else {
-            console.error('Failed to load destination types, status:', response.status);
+            publisherAlert('error', 'Could not load destination types. Refresh to retry.');
         }
     } catch (error) {
-        console.error('Error loading destination types:', error);
+        publisherAlert('error', 'Could not load destination types. Refresh to retry.');
     }
 }
 
@@ -892,20 +933,23 @@ async function loadAvailableDestinationTypes() {
 
 // Load favorite configurations
 async function loadFavoriteConfigs() {
+    const sequence = ++favoritesSequence;
     try {
         const response = await fetch('/api/publisher/favorites');
-        if (response.ok) {
-            const data = await response.json();
-            favoriteConfigs = data.favorites || [];
-            updateFavoritesList();
-        }
+        if (!response.ok) throw new Error('Could not load favorites. Refresh to retry.');
+        const data = await response.json();
+        if (sequence !== favoritesSequence) return;
+        favoriteConfigs = data.favorites || [];
+        updateFavoritesList();
     } catch (error) {
-        console.error('Failed to load favorite configs:', error);
+        if (sequence !== favoritesSequence) return;
+        publisherAlert('error', error.message);
     }
 }
 
 // Update favorites list display
 function updateFavoritesList() {
+    const selected = new Set(Array.from(document.querySelectorAll('#favoritesList input:checked')).map(el => el.value));
     const listDiv = document.getElementById('favoritesList');
     
     if (favoriteConfigs.length === 0) {
@@ -921,7 +965,7 @@ function updateFavoritesList() {
                 <div class="card-body py-2">
                     <div class="d-flex align-items-start">
                         <div class="form-check me-3">
-                            <input class="form-check-input" type="checkbox" id="test-${esc(fav.id)}" value="${esc(fav.id)}">
+                            <input class="form-check-input" type="checkbox" id="test-${esc(fav.id)}" value="${esc(fav.id)}"${selected.has(fav.id) ? ' checked' : ''}>
                             <label class="form-check-label" for="test-${esc(fav.id)}">
                                 <span class="visually-hidden">Select for testing</span>
                             </label>
@@ -933,10 +977,10 @@ function updateFavoritesList() {
                             <small class="text-muted">Created: ${createdDate}</small>
                         </div>
                         <div class="btn-group btn-group-sm">
-                            <button class="btn btn-outline-primary" onclick="useFavoriteConfig('${esc(fav.id)}')" title="Load this configuration for editing">
+                            <button class="btn btn-outline-primary" data-favorite-id="${esc(fav.id)}" onclick="useFavoriteConfig(this.dataset.favoriteId)" title="Load this configuration for editing">
                                 <i class="fas fa-edit"></i>
                             </button>
-                            <button class="btn btn-outline-danger" onclick="deleteFavoriteConfig('${esc(fav.id)}')" title="Delete">
+                            <button class="btn btn-outline-danger" data-favorite-id="${esc(fav.id)}" onclick="deleteFavoriteConfig(this.dataset.favoriteId)" title="Delete">
                                 <i class="fas fa-trash"></i>
                             </button>
                         </div>
@@ -951,12 +995,17 @@ function updateFavoritesList() {
 
 // Use a favorite configuration
 function useFavoriteConfig(favoriteId) {
+    if (publisherPending) return;
     const favorite = favoriteConfigs.find(f => f.id === favoriteId);
     if (!favorite) {
-        showAlert('error', 'Favorite configuration not found');
+        publisherAlert('error', 'Favorite configuration not found');
         return;
     }
     
+    if (!availableDestinationTypes.some(d => d.type === favorite.type && d.available)) {
+        publisherAlert('error', 'Destination schema unavailable. Refresh before editing.');
+        return;
+    }
     // Populate name and description fields
     document.getElementById('favoriteName').value = favorite.name;
     document.getElementById('favoriteDescription').value = favorite.description || '';
@@ -968,8 +1017,7 @@ function useFavoriteConfig(favoriteId) {
     // Store the original ID for updating
     document.getElementById('destinationForm').dataset.editingId = favoriteId;
     
-    // Wait a bit for the form to render, then populate it
-    setTimeout(() => {
+    {
         populateConfigForm(favorite.type, favorite.config);
         
         // Update button text to indicate editing
@@ -978,12 +1026,13 @@ function useFavoriteConfig(favoriteId) {
         submitBtn.innerHTML = '<i class="fas fa-save me-2"></i>Update Favorite';
         cancelBtn.style.display = 'inline-block';
         
-        showAlert('success', `Loaded favorite for editing: ${favorite.name}`);
-    }, 100);
+        publisherAlert('success', `Loaded favorite for editing: ${favorite.name}`);
+    }
 }
 
 // Cancel editing mode
 function cancelEdit() {
+    if (publisherPending) return;
     const form = document.getElementById('destinationForm');
     
     // Clear editing state
@@ -1001,7 +1050,7 @@ function cancelEdit() {
     // Reset form state
     updateConfigForm();
     
-    showAlert('info', 'Edit cancelled');
+    publisherAlert('info', 'Edit cancelled');
 }
 
 // Populate configuration form with favorite data
@@ -1012,9 +1061,10 @@ function populateConfigForm(type, config) {
 
 // Delete favorite configuration
 async function deleteFavoriteConfig(favoriteId) {
+    if (publisherPending) return;
     const favorite = favoriteConfigs.find(f => f.id === favoriteId);
     if (!favorite) {
-        showAlert('error', 'Favorite configuration not found');
+        publisherAlert('error', 'Favorite configuration not found');
         return;
     }
     
@@ -1022,23 +1072,28 @@ async function deleteFavoriteConfig(favoriteId) {
         return;
     }
     
+    if (!beginPublisherOperation()) return;
     try {
-        const response = await fetch(`/api/publisher/favorites/${favoriteId}`, {
+        const response = await fetch(`/api/publisher/favorites/${encodeURIComponent(favoriteId)}`, {
             method: 'DELETE'
         });
         
         const result = await response.json();
         
         if (response.ok) {
-            showAlert('success', result.message);
+            publisherAlert('success', result.message);
+            if (document.getElementById('destinationForm').dataset.editingId === favoriteId) {
+                const form = document.getElementById('destinationForm');
+                delete form.dataset.editingId; form.reset(); updateConfigForm();
+            }
             loadFavoriteConfigs(); // Reload favorites list
         } else {
-            showAlert('error', result.error);
+            publisherAlert('error', result.error);
         }
         
     } catch (error) {
-        showAlert('error', `Failed to delete favorite: ${error.message}`);
-    }
+        publisherAlert('error', `Failed to delete favorite: ${error.message}`);
+    } finally { endPublisherOperation(); }
 }
 </script>
 {% endblock %}
