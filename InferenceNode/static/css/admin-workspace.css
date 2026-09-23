@@ -1,0 +1,95 @@
+/* Shared presentation for the account directory and media library. */
+/* Use a readable system font and brighter secondary text on these two pages. */
+:is(.ae-workspace, #deleteMediaModal, #addUserModal, #editUserModal, #accessModal, #resetPwModal) {
+    --font-sans: system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+    --font-tactical: var(--font-sans);
+    --text-primary: #ffffff;
+    --text-secondary: #f1f5f9;
+    --text-tertiary: #e2e8f0;
+    --text-muted: #dce4ee;
+    font-family: var(--font-sans);
+    font-size: 1rem;
+    font-weight: 500;
+    -webkit-font-smoothing: auto;
+    -moz-osx-font-smoothing: auto;
+    line-height: 1.55;
+}
+.ae-workspace { --workspace-accent: #72b9ff; max-width: 1600px; margin-inline: auto; }
+.ae-workspace .ae-page-header {
+    align-items: center; padding: 28px 30px; margin-bottom: 24px;
+    border: 1px solid var(--border-medium); border-radius: 16px;
+    background: linear-gradient(115deg, rgba(54, 118, 190, .14), transparent 65%), var(--bg-secondary);
+}
+.ae-eyebrow { color: var(--workspace-accent); font-size: .875rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; margin-bottom: 8px; }
+.ae-workspace .ae-page-header h1 { font-family: inherit; text-transform: none; letter-spacing: -.035em; font-size: clamp(1.6rem, 2.4vw, 2.1rem); font-weight: 600; }
+.ae-workspace .ae-subtitle { margin-top: 8px; line-height: 1.6; color: var(--text-secondary); }
+.ae-workspace .btn { border-radius: 8px; min-height: 38px; }
+.ae-workspace .ae-page-header .btn-primary { padding-inline: 20px; box-shadow: 0 4px 18px rgba(25, 98, 173, .14); }
+.ae-workspace .ae-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-bottom: 24px; }
+.ae-workspace .ae-stat { border-radius: 12px; padding: 20px; align-items: flex-start; gap: 14px; box-shadow: none; }
+.ae-workspace .ae-stat-value { font-size: 1.8rem; font-weight: 600; line-height: 1.15; font-variant-numeric: tabular-nums; letter-spacing: -.04em; }
+.ae-workspace .ae-stat-label { color: var(--text-secondary); margin-top: 5px; text-transform: none; letter-spacing: 0; }
+.ae-workspace .ae-stat-icon { border-radius: 10px; width: 40px; height: 40px; flex: 0 0 40px; background: rgba(84, 160, 240, .1); color: var(--workspace-accent); }
+.ae-stat-note { font-size: .875rem; color: var(--text-tertiary); margin-top: 6px; }
+.ae-workspace .card { border-radius: 12px; box-shadow: none; border: 1px solid var(--border-medium); }
+.ae-workspace .card:hover { transform: none; }
+.ae-workspace .card-header { background: transparent; padding: 20px 22px; border-bottom: 1px solid var(--border-medium); }
+.ae-section-title { font-size: 1rem; font-weight: 600; margin: 0 0 4px; color: var(--text-primary); }
+.ae-section-description { color: var(--text-tertiary); font-size: .875rem; margin: 0; }
+.ae-workspace .form-control, .ae-workspace .form-select { min-height: 42px; border-radius: 8px; }
+.ae-workspace .form-label { color: var(--text-secondary); font-size: .875rem; font-weight: 500; margin-bottom: 7px; }
+.ae-workspace .table { margin-bottom: 0; }
+.ae-workspace .table thead th { padding: 13px 20px; background: rgba(120, 145, 174, .05); color: var(--text-tertiary); font-size: .875rem; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; border-bottom: 1px solid var(--border-medium); white-space: nowrap; }
+.ae-workspace .table tbody td { padding: 18px 20px; border-color: rgba(132, 157, 188, .1); }
+.ae-workspace .ae-avatar { width: 42px; height: 42px; border-radius: 12px; font-size: .875rem; }
+.ae-workspace .ae-identity-lines .ae-primary { font-size: 1rem; }
+.ae-workspace .ae-hint { padding: 14px 18px; line-height: 1.6; border-left: 2px solid rgba(114, 185, 255, .4); }
+.ae-workspace :focus-visible { outline: 2px solid var(--workspace-accent); outline-offset: 3px; }
+.ae-media-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 14px; padding: 18px 22px; border-bottom: 1px solid var(--border-medium); }
+.ae-media-search { flex: 1 1 260px; }
+.ae-media-filter { flex: 0 1 190px; }
+.ae-media-file { display: flex; gap: 13px; align-items: flex-start; min-width: 230px; max-width: 460px; }
+.ae-media-icon { width: 40px; height: 46px; display: grid; place-items: center; flex-shrink: 0; color: var(--workspace-accent); border: 1px solid rgba(114, 185, 255, .18); border-radius: 9px; background: rgba(114, 185, 255, .07); }
+.ae-media-name { color: var(--text-primary); font-size: 1rem; font-weight: 600; overflow-wrap: anywhere; }
+.ae-media-details { margin-top: 6px; color: var(--text-tertiary); font-size: .875rem; }
+.ae-media-details summary { cursor: pointer; width: fit-content; }
+.ae-media-details code { display: block; overflow-wrap: anywhere; color: var(--text-secondary); margin-top: 8px; font-size: .875rem; }
+.ae-media-status { display: inline-flex; align-items: center; gap: 7px; border-radius: 6px; padding: 5px 9px; font-size: .875rem; font-weight: 500; white-space: nowrap; }
+.ae-media-status.is-ready { background: rgba(64, 192, 140, .1); color: #80d9b2; }
+.ae-media-status.is-pending { background: rgba(95, 171, 244, .1); color: #8ac6ff; }
+.ae-media-status.is-attention { background: rgba(237, 166, 69, .12); color: #efc080; }
+.ae-media-footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 14px 22px; border-top: 1px solid var(--border-medium); font-size: .875rem; color: var(--text-tertiary); }
+.ae-library-empty { text-align: center; padding: 56px 24px; }
+.ae-library-empty > i { display: grid; place-items: center; width: 62px; height: 62px; margin: 0 auto 18px; color: var(--workspace-accent); border-radius: 18px; background: rgba(114, 185, 255, .08); font-size: 1.5rem; }
+.ae-library-empty h3 { font-size: 1.1rem; margin-bottom: 8px; }
+.ae-library-empty p { color: var(--text-tertiary); max-width: 420px; margin: 0 auto 20px; line-height: 1.7; font-size: .875rem; }
+#deleteMediaModal .modal-content, #addUserModal .modal-content, #editUserModal .modal-content, #accessModal .modal-content, #resetPwModal .modal-content { border-radius: 14px; }
+#deleteMediaModal .modal-header, #deleteMediaModal .modal-body, #deleteMediaModal .modal-footer { padding: 22px; }
+@media (max-width: 1000px) { .ae-workspace .ae-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .ae-workspace .table tbody td, .ae-workspace .table thead th { padding-inline: 12px; } }
+@media (max-width: 576px) { .ae-workspace .ae-page-header { padding: 22px 18px; } .ae-workspace .ae-page-header > .d-flex { width: 100%; } .ae-workspace .ae-page-header > .d-flex > * { flex: 1; } .ae-workspace .ae-stat { padding: 14px; gap: 10px; } .ae-workspace .ae-stat-icon { width: 30px; height: 30px; flex-basis: 30px; font-size: .875rem; } .ae-workspace .ae-stat-value { font-size: 1.5rem; } .ae-media-filter { flex: 1 1 140px; } .ae-media-toolbar { padding: 16px; } }
+.ae-workspace .ae-stat-icon.warn { color: #efc080; background: rgba(237, 166, 69, .1); }
+.ae-workspace .ae-stat-icon.danger { color: #d2a4ae; background: rgba(180, 108, 126, .1); }
+
+/* Override the compact monospace defaults used by shared admin tables. */
+.ae-workspace .table, .ae-workspace .table td, .ae-workspace .btn, .ae-workspace .form-control,
+.ae-workspace .form-select, .ae-workspace .ae-stat-value,
+.ae-workspace .ae-identity-lines .ae-handle { font-family: var(--font-sans); }
+.ae-workspace .table tbody td, .ae-workspace .btn,
+.ae-workspace .form-control, .ae-workspace .form-select { font-size: 1rem; }
+.ae-workspace .ae-stat-label, .ae-workspace .ae-hint,
+.ae-workspace .ae-identity-lines .ae-handle, .ae-workspace .ae-identity-lines .ae-mail,
+.ae-workspace .ae-badge, .ae-workspace .badge, .ae-workspace small,
+.ae-workspace .small { font-size: .875rem; }
+.ae-workspace .ae-identity-lines { line-height: 1.6; }
+.ae-workspace .form-control::placeholder { color: var(--text-muted); opacity: 1; }
+:is(#deleteMediaModal, #addUserModal, #editUserModal, #accessModal, #resetPwModal) :is(.form-control, .form-select, .btn) { font-family: var(--font-sans); font-size: 1rem; }
+:is(#deleteMediaModal, #addUserModal, #editUserModal, #accessModal, #resetPwModal) :is(small, .small, .form-label, .form-text, .ae-role-desc, .ae-badge) { font-size: .875rem; }
+
+/* Account state belongs in the status badge, not reduced text contrast. */
+.ae-workspace tr.ae-row-inactive td:not(:last-child),
+.ae-workspace .ae-avatar.is-inactive { opacity: 1; }
+.ae-workspace .table td, .ae-workspace .ae-subtitle,
+.ae-workspace .ae-section-description, .ae-workspace .ae-stat-label,
+.ae-workspace .ae-stat-note, .ae-workspace .ae-media-details,
+.ae-workspace .ae-media-footer, .ae-workspace .ae-hint { font-weight: 500; }
+.ae-workspace .form-label, .ae-workspace .ae-media-status { font-weight: 600; }

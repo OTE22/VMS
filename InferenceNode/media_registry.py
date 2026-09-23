@@ -87,7 +87,7 @@ UPLOAD_EXTS = {'.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.m4v', 
 
 
 def ingest_upload(file_storage, *, original_filename: str, created_by: int = None,
-                  timestamp: str = None) -> dict:
+                  timestamp: str = None, verify_video: bool = False) -> dict:
     """Creation state machine (section 3a) for an uploaded media file:
        INSERT media_assets STAGING -> commit -> save bytes into media/.staging ->
        VALIDATING (extension/format, non-empty) -> sha256+size -> fsync -> atomic promote
@@ -102,10 +102,8 @@ def ingest_upload(file_storage, *, original_filename: str, created_by: int = Non
                                code="MEDIA_TYPE_INVALID")
     safe = secure_filename(original_filename) or f"upload{ext}"
     stamp = timestamp or _dt.now().strftime('%Y%m%d_%H%M%S')
-    rel = f"{stamp}_{safe}"
-    final = ap.resolve("media", rel)
-    if os.path.exists(final):
-        rel = f"{stamp}_{uuid.uuid4().hex[:8]}_{safe}"; final = ap.resolve("media", rel)
+    rel = f"{stamp}_{uuid.uuid4().hex}_{safe}"
+    final = ap.resolve('media', rel)
     staged = ap.staging_path("media", rel)
     os.makedirs(os.path.dirname(staged), exist_ok=True)
     media_id = str(uuid.uuid4())
@@ -139,6 +137,15 @@ def ingest_upload(file_storage, *, original_filename: str, created_by: int = Non
         m.status = transition(m.status, S.VALIDATING).value
     if os.path.getsize(staged) == 0:
         _fail(Reason.VALIDATION_FAILED, V.FORMAT_INVALID, "Uploaded file is empty", "MEDIA_EMPTY")
+    if verify_video:
+        import cv2
+        capture = cv2.VideoCapture(staged)
+        try:
+            opened, frame = capture.read() if capture.isOpened() else (False, None)
+        finally:
+            capture.release()
+        if not opened or frame is None:
+            _fail(Reason.VALIDATION_FAILED, V.FORMAT_INVALID, 'Video could not be decoded; upload a supported playable video', 'MEDIA_FORMAT_INVALID')
     sha, size = sha256_file(staged)                            # 4. hash staged bytes
     try:
         os.makedirs(os.path.dirname(final), exist_ok=True)
@@ -242,6 +249,7 @@ def referencing_pipelines(relative_path: str) -> List[dict]:
     compatibility path).
     """
     from .pipeline_repository import repository
+    from .media_library import is_network_source
     base = os.path.basename(relative_path)
     out = []
     for r in repository.list(is_admin=True):
@@ -249,13 +257,24 @@ def referencing_pipelines(relative_path: str) -> List[dict]:
         cfg = fs.get("config") or {}
         rel = cfg.get("relative_source")
         src = cfg.get("source")
-        hit = (rel == relative_path) or (isinstance(src, str) and os.path.basename(src.replace("\\", "/")) == base)
+        if rel:
+            hit = os.path.normpath(rel.replace('\\', '/')) == os.path.normpath(relative_path)
+        else:
+            hit = (fs.get('capture_type') in ('video_file', 'video') and isinstance(src, str)
+                   and not is_network_source(src) and os.path.basename(src.replace('\\', '/')) == base)
         if hit:
             out.append({"pipeline_id": r["pipeline_id"], "name": r.get("name"), "status": r.get("status")})
     return out
 
 
 def delete_media(media_id: str, *, force: bool = False) -> dict:
+    from .media_guard import lock
+    with get_session() as session:
+        lock(session)
+        return _delete_media_locked(media_id, force=force)
+
+
+def _delete_media_locked(media_id: str, *, force: bool = False) -> dict:
     """Retire a media asset: bytes to managed trash, then the row, then purge.
 
     Mirrors the model/engine deletion machine (section 3e of the readiness report):
@@ -271,7 +290,13 @@ def delete_media(media_id: str, *, force: bool = False) -> dict:
         m = s.execute(select(MediaAsset).where(MediaAsset.media_id == media_id)).scalar_one_or_none()
         if m is None:
             return {"outcome": "not_found", "media_id": media_id}
-        rel, status = m.relative_path, m.status
+        rel, status, reason = m.relative_path, m.status, m.reason
+
+    def restore_status():
+        with get_session() as session:
+            row = session.execute(select(MediaAsset).where(MediaAsset.media_id == media_id)).scalar_one_or_none()
+            if row is not None:
+                row.status, row.reason = status, reason
 
     users = referencing_pipelines(rel)
     if users and not force:
@@ -295,6 +320,7 @@ def delete_media(media_id: str, *, force: bool = False) -> dict:
             os.replace(final, trash)
             moved = (trash, final)
     except Exception as e:  # noqa: BLE001
+        restore_status()
         logger.error(f"[MEDIA] could not stage {rel} for deletion: {e}")
         return {"outcome": "failed", "media_id": media_id, "relative_path": rel,
                 "error": f"{e.__class__.__name__}: {e}"}
@@ -308,6 +334,7 @@ def delete_media(media_id: str, *, force: bool = False) -> dict:
         if moved and os.path.exists(moved[0]):
             os.makedirs(os.path.dirname(moved[1]), exist_ok=True)
             os.replace(moved[0], moved[1])
+        restore_status()
         logger.error(f"[MEDIA] row delete failed for {rel}, file restored: {e}")
         return {"outcome": "failed", "media_id": media_id, "relative_path": rel,
                 "error": f"{e.__class__.__name__}: {e}"}

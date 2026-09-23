@@ -34,7 +34,10 @@ def validate_favorite_config(kind, config):
     if not schema or not schema.get('available'):
         raise ValueError('Select an available destination type')
     out = normalize_config(kind, config)
-    for field in schema['config_schema']['fields']:
+    from ResultPublisher import BaseResultDestination
+    fields = {f['name']: f for f in BaseResultDestination.get_config_schema()['fields']}
+    fields.update({f['name']: f for f in schema['config_schema']['fields']})
+    for field in fields.values():
         key = 'baud' if kind == 'serial' and field['name'] == 'baud_rate' else field['name']
         value = out.get(key, field.get('default'))
         if value is None or value == '':

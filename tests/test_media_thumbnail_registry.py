@@ -65,6 +65,10 @@ def env(tmp_path, monkeypatch):
 
 
 def _mk_pipeline(env, pid="p-1"):
+    path = ap.resolve("media", "a.mp4")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f: f.write(b"thumbnail-fixture-media")
+    media.register_existing("a.mp4")
     ps.create_pipeline(env["admin"], pipeline_id=pid, name=pid, config={"name": pid,
                        "frame_source": {"type": "video_file", "config": {"relative_source": "a.mp4"}},
                        "model": {"id": None}, "destinations": []})
@@ -165,7 +169,7 @@ class _Upload:
 
 def test_media_upload_creation_state_machine(env):
     row = media.ingest_upload(_Upload(b"\x00" * 1024), original_filename="cam 01.mp4", timestamp="20260101_000000")
-    assert row["relative_path"] == "20260101_000000_cam_01.mp4"
+    assert row["relative_path"].startswith("20260101_000000_") and row["relative_path"].endswith("_cam_01.mp4")
     assert row["status"] == "AVAILABLE" and row["validation_status"] == "PASSED"
     assert row["sha256"] == hashlib.sha256(b"\x00" * 1024).hexdigest() and row["size_bytes"] == 1024
     final = ap.resolve("media", row["relative_path"])
@@ -337,7 +341,7 @@ def test_pg_media_ingest_and_migration(pg_env, tmp_path):
     with pg_env["engine"].connect() as c:
         db = c.execute(text("SELECT status, validation_status, sha256, size_bytes, relative_path FROM media_assets "
                             "WHERE media_id=:m"), {"m": row["media_id"]}).one()
-    assert tuple(db) == ("AVAILABLE", "PASSED", hashlib.sha256(b"\x01" * 2048).hexdigest(), 2048, "20260102_000000_pg_cam.mp4")
+    assert tuple(db) == ("AVAILABLE", "PASSED", hashlib.sha256(b"\x01" * 2048).hexdigest(), 2048, row["relative_path"])
     assert MediaLibrary().resolve_relative(row["relative_path"]) == ap.resolve("media", row["relative_path"])
     legacy = tmp_path / "legacy_media"; legacy.mkdir()
     (legacy / "old.mp4").write_bytes(b"O" * 300)

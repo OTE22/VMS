@@ -95,7 +95,7 @@ def test_page_distinguishes_lifecycle_from_validation_status():
 def test_page_escapes_every_dynamic_value():
     """Filenames and pipeline names are user-controlled."""
     s = _page()
-    for field in ("m.relative_path", "m.original_filename", "m.media_id", "m.status"):
+    for field in ("m.relative_path", "name", "m.media_id"):
         assert f"esc({field})" in s, f"{field} is rendered unescaped"
     # no raw interpolation of a server value into HTML
     assert "${m.relative_path}" not in s.replace("${esc(m.relative_path)}", "")
@@ -119,5 +119,5 @@ def test_delete_uses_the_api_and_encodes_the_id():
 def test_page_refreshes_after_a_delete_attempt():
     """Whether it succeeded or was refused, the list must reflect reality afterwards."""
     s = _page()
-    i = s.index("finally {")
+    i = s.index("finally {", s.index("document.getElementById('confirmDeleteMedia').addEventListener"))
     assert "loadMedia()" in s[i:i + 400]

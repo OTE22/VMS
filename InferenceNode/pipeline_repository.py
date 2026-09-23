@@ -144,11 +144,14 @@ class PipelineRepository:
                status: str = "stopped", owner_id: Optional[int] = None,
                owner_username: Optional[str] = None) -> Dict[str, Any]:
         with get_session() as s:
+            from .media_guard import lock, guard_reference
+            lock(s)
             exists = s.execute(
                 select(Pipeline).where(Pipeline.pipeline_id == str(pipeline_id))
             ).scalar_one_or_none()
             if exists is not None:
                 raise ValueError("pipeline_id already exists")
+            guard_reference(s, config)
             p = Pipeline(pipeline_id=str(pipeline_id), name=name, description=description,
                          config={}, status=status,
                          owner_id=owner_id, owner_username=owner_username)
@@ -160,6 +163,8 @@ class PipelineRepository:
     def update(self, pipeline_id: str, *, name=None, description=None,
                config=None, status=None) -> Optional[Dict[str, Any]]:
         with get_session() as s:
+            from .media_guard import lock, guard_reference
+            lock(s)
             p = s.execute(
                 select(Pipeline).where(Pipeline.pipeline_id == str(pipeline_id))
             ).scalar_one_or_none()
@@ -170,6 +175,7 @@ class PipelineRepository:
             if description is not None:
                 p.description = description
             if config is not None:
+                guard_reference(s, config, _row_to_dict(p)["config"])
                 p.config = pipeline_secrets.encrypt(_sync_model_reference(p, config))
             if status is not None:
                 p.status = status

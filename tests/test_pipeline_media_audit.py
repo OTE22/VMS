@@ -39,6 +39,9 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("ARMYEYE_ARTIFACT_ROOT", str(tmp_path / "root"))
     monkeypatch.delenv("ARMYEYE_MEDIA_ROOT", raising=False)
     ap.ensure_layout()
+    from InferenceNode import media_registry
+    with open(ap.resolve("media", "a.mp4"), "wb") as f: f.write(b"audit-fixture-media")
+    media_registry.register_existing("a.mp4")
     admin = svc.create_user(_Seed, username="root", password="rootpass1", role="admin",
                             must_change_password=False)
     viewer = svc.create_user(_Seed, username="joe", password="joepass123", role="user",
@@ -140,7 +143,7 @@ def test_media_upload_is_audited_with_hash_and_size(env):
                              "size_bytes": row["size_bytes"], "sha256": row["sha256"],
                              "media_type": row["media_type"]})
     e = _entries("media_uploaded")[0]
-    assert e["target"] == "20260101_000000_clip_1.mp4" and e["actor"] == "root"
+    assert e["target"] == row["relative_path"] and e["actor"] == "root"
     assert e["detail"]["size_bytes"] == 512 and len(e["detail"]["sha256"]) == 64
     assert e["detail"]["media_type"] == "mp4"
 

@@ -22,6 +22,15 @@ from .pipeline_repository import PERMISSIONS, normalize_permissions
 logger = logging.getLogger("InferenceNode.pipeline_access")
 
 
+def _record_access_audit(**kwargs):
+    try:
+        record_audit(**kwargs)
+        return True
+    except Exception:
+        logger.exception('Access saved but audit recording failed')
+        return False
+
+
 def register_pipeline_access(app):
     @app.route("/api/pipelines/<pipeline_id>/access", methods=["GET"])
     @admin_required
@@ -43,6 +52,8 @@ def register_pipeline_access(app):
         """
         _require_csrf()
         data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict) or any(type(v) is not bool for v in data.values()):
+            return jsonify({'error': 'Permissions must be JSON booleans'}), 400
         unknown = set(data) - set(PERMISSIONS)
         if unknown:
             return jsonify({"error": f"Unsupported field(s): {', '.join(sorted(unknown))}. "
@@ -53,14 +64,14 @@ def register_pipeline_access(app):
         except ps.AccessDenied as e:
             return jsonify({"error": str(e)}), 404
 
-        target = next((u.username for u in list_users() if u.id == user_id), str(user_id))
-        record_audit(actor=current_user,
+        target = str(user_id)
+        audited = _record_access_audit(actor=current_user,
                      action="pipeline_access_granted" if before is None else "pipeline_access_changed",
                      target=pipeline_id,
                      detail={"user_id": user_id, "username": target,
                              "old": {k: before[k] for k in PERMISSIONS} if before else None,
                              "new": {k: result[k] for k in PERMISSIONS}})
-        return jsonify({"status": "success", "access": result})
+        return jsonify({"status": "success", "access": result, "saved": True, "audit_recorded": audited})
 
     @app.route("/api/pipelines/<pipeline_id>/access/<int:user_id>", methods=["DELETE"])
     @admin_required
@@ -70,11 +81,12 @@ def register_pipeline_access(app):
             removed = ps.remove_access(current_user, pipeline_id, user_id)
         except ps.AccessDenied as e:
             return jsonify({"error": str(e)}), 404
+        audited = True
         if removed:
-            target = next((u.username for u in list_users() if u.id == user_id), str(user_id))
-            record_audit(actor=current_user, action="pipeline_access_removed",
+            target = str(user_id)
+            audited = _record_access_audit(actor=current_user, action="pipeline_access_removed",
                          target=pipeline_id, detail={"user_id": user_id, "username": target})
-        return jsonify({"status": "success", "removed": bool(removed)})
+        return jsonify({"status": "success", "removed": bool(removed), "saved": True, "audit_recorded": audited})
 
     @app.route("/api/users/<int:user_id>/pipeline-access", methods=["GET"])
     @admin_required

@@ -12,8 +12,8 @@ function pageContext(page, response) {
     const alerts = [];
     const element = id => {
         if (!elements.has(id)) elements.set(id, {
-            innerHTML: '', textContent: '', value: '', checked: false,
-            addEventListener(event, fn) { this[event] = fn; },
+            innerHTML: '', textContent: '', value: '', checked: false, setAttribute() {},
+            addEventListener(event, fn) { this[event] = fn; }, querySelectorAll: () => [],
         });
         return elements.get(id);
     };
@@ -23,7 +23,7 @@ function pageContext(page, response) {
         fetchJSON: async () => response,
         fetch: async () => response,
         showAlert: (...args) => alerts.push(args),
-        bootstrap: { Modal: class { show() {} static getInstance() { return { hide() {} }; } } },
+        bootstrap: { Modal: class { show() {} static getOrCreateInstance() { return {show() {}}; } static getInstance() { return { hide() {} }; } } },
         console: { log() {}, warn() {}, error() {} },
     });
     // Exercise the real shared parsing helper, rather than mocking its return shape.
@@ -123,3 +123,17 @@ for (const enabled of [false, true]) {
         assert.equal(starts, 1);
     });
 }
+
+test('media filters by filename, pipeline and availability without losing inventory totals', async () => {
+    const records=[{...media,media_id:'a',original_filename:'Lobby.mp4',references:[{name:'Entrance'}]}, {...media,media_id:'b',original_filename:'Parking.mp4',status:'MISSING'}];
+    const {ctx,element}=pageContext('media',response(200,{media:records,count:2,total_size_bytes:2468}));
+    await ctx.loadMedia();
+    assert.equal(element('mediaTotal').textContent,2);
+    assert.equal(element('mediaAttention').textContent,1);
+    element('mediaSearch').value='entrance';ctx.renderMedia();
+    assert.match(element('mediaList').innerHTML,/Lobby.mp4/);assert.doesNotMatch(element('mediaList').innerHTML,/Parking.mp4/);
+    element('mediaSearch').value='';element('mediaFilter').value='attention';ctx.renderMedia();
+    assert.match(element('mediaList').innerHTML,/Parking.mp4/);assert.doesNotMatch(element('mediaList').innerHTML,/Lobby.mp4/);
+    element('mediaSearch').value='no-match';ctx.renderMedia();assert.match(element('mediaList').innerHTML,/No matching files/);
+    ctx.clearMediaFilters();assert.match(element('mediaSummary').textContent,/2 of 2/);
+});

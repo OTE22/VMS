@@ -148,7 +148,7 @@ def test_a_row_delete_failure_restores_the_bytes(env, monkeypatch):
 
     def flaky():
         calls["n"] += 1
-        if calls["n"] == 3:                     # the row-deletion transaction
+        if calls["n"] == 4:                     # the row-deletion transaction
             raise RuntimeError("db down")
         return real()
     monkeypatch.setattr(media, "get_session", flaky)

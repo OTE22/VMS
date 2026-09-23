@@ -294,12 +294,18 @@ function clearFilters() {
 
 /* ================================================================ loading */
 
+let usersSequence = 0;
+let accessSequence = 0;
+let usersWritePending = false;
+
 async function loadUsers({ showSkeleton = true } = {}) {
+    const sequence = ++usersSequence;
     if (showSkeleton) {
         lastRenderKey = '';
         dom['users-tbody'].innerHTML = skeletonRows(5, COLS);
     }
     const res = await apiCall('/api/users');
+    if (sequence !== usersSequence) return;
     if (!res.ok) {
         lastRenderKey = '';
         allUsers = [];
@@ -323,15 +329,23 @@ async function loadUsers({ showSkeleton = true } = {}) {
 function userById(id) { return allUsers.find(u => u.id === id); }
 
 async function write(url, method, body, btn, busyLabel) {
+    if (usersWritePending) return {ok:false, error:'Another update is pending'};
+    usersWritePending = true;
+    usersSequence++;
+    const controls = Array.from(document.querySelectorAll('.modal input, .modal select, .modal button, [data-action]')).map(el => [el, el.disabled]);
+    controls.forEach(([el]) => { el.disabled = true; });
     setButtonLoading(btn, true, busyLabel);
-    const res = await apiCall(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    setButtonLoading(btn, false);
-    if (!res.ok) showAlert('error', esc(res.error), 0);
-    return res;
+    try {
+        const res = await apiCall(url, {method, headers:{'Content-Type':'application/json'}, body:body === undefined ? undefined : JSON.stringify(body)});
+        if (!res.ok) showAlert('error', esc(res.error), 0);
+        else if (res.data && res.data.audit_recorded === false)
+            showAlert('warning', 'Access saved, but the audit log could not be recorded.', 0);
+        return res;
+    } finally {
+        usersWritePending = false;
+        controls.forEach(([el, disabled]) => { el.disabled = disabled; });
+        setButtonLoading(btn, false);
+    }
 }
 
 async function changeRole(u) {
@@ -467,6 +481,7 @@ function resetCreateUserForm() {
 }
 
 function openCreateUser() {
+    if (usersWritePending) return;
     resetCreateUserForm();
     modals.add.show();
 }
@@ -508,6 +523,7 @@ async function createUser(ev) {
 /* ============================================================== edit UX */
 
 function openEditUser(u) {
+    if (usersWritePending) return;
     document.getElementById('eu-id').value = u.id;
     document.getElementById('eu-username').value = u.username;
     document.getElementById('eu-fullname').value = u.full_name || '';
@@ -537,6 +553,7 @@ async function updateUser(ev) {
 /* ==================================================== reset password UX */
 
 function openPasswordReset(u) {
+    if (usersWritePending) return;
     document.getElementById('rp-id').value = u.id;
     document.getElementById('rp-username').textContent = u.username;
     ['rp-password', 'rp-confirm'].forEach(id => {
@@ -613,6 +630,8 @@ function accessRowHtml(p, grant) {
 }
 
 async function openPipelineAccess(u) {
+    if (usersWritePending) return;
+    const sequence = ++accessSequence;
     document.getElementById('ac-username').textContent = u.username;
     document.getElementById('ac-admin-note').hidden = u.role !== 'admin';
     const body = document.getElementById('ac-body');
@@ -624,6 +643,7 @@ async function openPipelineAccess(u) {
         apiCall('/api/pipelines/assignable'),
         apiCall(`/api/users/${u.id}/pipeline-access`),
     ]);
+    if (sequence !== accessSequence) return;
     if (!pipesRes.ok || !accessRes.ok) {
         body.innerHTML = '';
         const div = document.createElement('div');
@@ -714,6 +734,11 @@ function filterAccessRows(term) {
 /* ============================================================== binding */
 
 function bindEvents() {
+    document.querySelectorAll('.modal').forEach(modal => {
+        modal.addEventListener('hide.bs.modal', ev => { if (usersWritePending) ev.preventDefault(); });
+    });
+    const accessModal = document.getElementById('accessModal');
+    if (accessModal) accessModal.addEventListener('hidden.bs.modal', () => { accessSequence++; });
     // Row action menus (delegated: usernames may contain quotes)
     dom['users-tbody'].addEventListener('click', ev => {
         const btn = ev.target.closest('[data-action]');

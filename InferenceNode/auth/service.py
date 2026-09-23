@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import os
 import logging
+import re
 from datetime import datetime
 from typing import Optional, List
 
 import bcrypt
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 
 from .db import get_session, is_postgres
 from .models import User, AuditLog, normalize_username, VALID_ROLES
@@ -40,6 +41,8 @@ class UserOpError(Exception):
 def hash_password(password: str) -> str:
     if not password or len(password) < 8:
         raise UserOpError("Password must be at least 8 characters")
+    if len(password.encode('utf-8')) > 72:
+        raise UserOpError('Password must be at most 72 UTF-8 bytes')
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 
@@ -75,6 +78,8 @@ def record_audit(actor=None, action="", target=None, detail=None, ip=None) -> No
 def _lock_user(session, user_id: int) -> Optional[User]:
     """Load a user row, taking a row lock on Postgres to serialize concurrent
     authorization changes (last-admin protection)."""
+    if is_postgres():
+        session.execute(text('SELECT pg_advisory_xact_lock(728194621)'))
     stmt = select(User).where(User.id == user_id)
     if is_postgres():
         stmt = stmt.with_for_update()
@@ -215,13 +220,28 @@ def _check_password_policy(password: str) -> None:
         raise UserOpError(f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
 
 
+def _profile_field(value, name, limit):
+    if value is None:
+        return None
+    if not isinstance(value, str) or len(value) > limit:
+        raise UserOpError(f'Invalid {name}')
+    value = value.strip()
+    if name == 'email' and value and not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', value):
+        raise UserOpError('Invalid email address')
+    return value or None
+
+
 def create_user(actor, *, username, password, role="user", email=None,
                 full_name=None, must_change_password=True) -> "UserSnapshot":
+    if not isinstance(role, str) or not isinstance(username, str):
+        raise UserOpError('Username and role must be text')
+    email = _profile_field(email, 'email', 255)
+    full_name = _profile_field(full_name, 'full name', 255)
     role = (role or "user").strip().lower()
     if role not in VALID_ROLES:
         raise UserOpError(f"Invalid role: {role}")
     uname = (username or "").strip()
-    if not uname:
+    if not uname or len(uname) > 150:
         raise UserOpError("Username is required")
     _check_password_policy(password)
     key = normalize_username(uname)
@@ -254,12 +274,12 @@ def update_profile(actor, user_id: int, *, email=None, full_name=None) -> "UserS
 
         changes = {}
         if email is not None:
-            new_email = (email or "").strip() or None
+            new_email = _profile_field(email, 'email', 255)
             if new_email != user.email:
                 changes["email"] = {"old": user.email, "new": new_email}
                 user.email = new_email
         if full_name is not None:
-            new_name = (full_name or "").strip() or None
+            new_name = _profile_field(full_name, 'full name', 255)
             if new_name != user.full_name:
                 changes["full_name"] = {"old": user.full_name, "new": new_name}
                 user.full_name = new_name
@@ -271,6 +291,8 @@ def update_profile(actor, user_id: int, *, email=None, full_name=None) -> "UserS
 
 
 def set_role(actor, user_id: int, role: str) -> "UserSnapshot":
+    if not isinstance(role, str):
+        raise UserOpError('Role must be text')
     role = (role or "").strip().lower()
     if role not in VALID_ROLES:
         raise UserOpError(f"Invalid role: {role}")

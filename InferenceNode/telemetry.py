@@ -19,6 +19,8 @@ class NodeTelemetry:
             pass
         self.node_id = node_id
         self.logger = logging.getLogger(self.__class__.__name__)
+        self.config_lock = threading.RLock()
+        self._stop_event = threading.Event()
         self.running = False
         self.telemetry_thread = None
         self.mqtt_client = None
@@ -303,35 +305,93 @@ class NodeTelemetry:
         return None
     
     def start_telemetry(self):
-        """Start telemetry collection and publishing"""
-        if self.running:
-            return
-            
-        self.running = True
-        self.telemetry_thread = threading.Thread(target=self._telemetry_loop, daemon=True)
-        self.telemetry_thread.start()
-        self.logger.info("Telemetry started")
-    
+        with self.config_lock:
+            if self.running:
+                return
+            if self.telemetry_thread and self.telemetry_thread.is_alive():
+                raise RuntimeError('Previous telemetry worker is still stopping; retry shortly')
+            self._stop_event = threading.Event()
+            self.running = True
+            self.telemetry_thread = threading.Thread(target=self._telemetry_loop, args=(self._stop_event,), daemon=True)
+            self.telemetry_thread.start()
+
     def stop_telemetry(self):
-        """Stop telemetry collection"""
-        self.running = False
-        if self.telemetry_thread:
-            self.telemetry_thread.join(timeout=5)
-        self.logger.info("Telemetry stopped")
-    
-    def _telemetry_loop(self):
-        """Main telemetry collection loop"""
-        while self.running:
+        with self.config_lock:
+            self.running = False
+            self._stop_event.set()
+            if self.telemetry_thread and self.telemetry_thread is not threading.current_thread():
+                self.telemetry_thread.join(timeout=5)
+
+    def _telemetry_loop(self, stop_event):
+        while not stop_event.is_set():
             try:
                 telemetry_data = self.get_system_info()
-                
-                if self.mqtt_client and self.mqtt_topic:
-                    message = json.dumps(telemetry_data)
-                    self.mqtt_client.publish(self.mqtt_topic, message)
-                    self.logger.debug("Telemetry published to MQTT")
-                
-                time.sleep(self.update_interval)
-                
-            except Exception as e:
-                self.logger.error(f"Telemetry loop error: {str(e)}")
-                time.sleep(self.update_interval)
+                if stop_event.is_set():
+                    break
+                if self.mqtt_client and self.mqtt_topic and 'error' not in telemetry_data:
+                    self.mqtt_client.publish(self.mqtt_topic, json.dumps(telemetry_data))
+            except Exception as exc:
+                self.logger.error('Telemetry loop error: %s', exc)
+            stop_event.wait(self.update_interval)
+
+    def apply_settings(self, data):
+        """Save a local desired config before changing runtime; serialize the full operation."""
+        import math
+        from . import node_settings_store as store, config_secrets
+        from .pipeline_store import unredact_into
+        if not isinstance(data, dict):
+            return {'error': 'Request must be a JSON object'}, 400
+        with self.config_lock:
+            try:
+                stored = store.get_setting(store.KEY_TELEMETRY, runtime=True) or {}
+                if stored.pop('_secrets_ok', True) is not True:
+                    raise config_secrets.SecretsUnavailable('Stored credentials unavailable')
+                desired = {**stored, **data}
+                allowed = {'enabled','publish_interval','mqtt_server','mqtt_port','mqtt_topic','mqtt_username','mqtt_password'}
+                if set(data) - allowed:
+                    raise ValueError('Unknown telemetry settings')
+                desired.setdefault('enabled', False)
+                desired.setdefault('publish_interval', 30)
+                desired.setdefault('mqtt_server', '')
+                desired.setdefault('mqtt_port', 1883)
+                desired.setdefault('mqtt_topic', 'infernode/telemetry')
+                interval = float(desired['publish_interval'])
+                port = desired['mqtt_port']
+                if type(desired['enabled']) is not bool or not math.isfinite(interval) or not 5 <= interval <= 300:
+                    raise ValueError('Invalid enabled value or interval (5–300 seconds)')
+                if isinstance(port, bool) or not isinstance(port, (int, float)) or int(port) != port or not 1 <= port <= 65535:
+                    raise ValueError('MQTT port must be an integer from 1 to 65535')
+                for key in ('mqtt_server','mqtt_topic'):
+                    if not isinstance(desired[key], str):
+                        raise ValueError(key + ' must be text')
+                for key in ('mqtt_username','mqtt_password'):
+                    if desired.get(key) is not None and not isinstance(desired[key], str):
+                        raise ValueError(key + ' must be text or null')
+                desired = unredact_into(stored, desired)
+                desired['publish_interval'], desired['mqtt_port'] = interval, int(port)
+                store.set_setting(store.KEY_TELEMETRY, desired)
+            except config_secrets.SecretsUnavailable:
+                return {'error': 'Configuration encryption key unavailable; settings unchanged'}, 503
+            except (ValueError, TypeError, OverflowError) as exc:
+                return {'error': str(exc)}, 400
+            # No runtime fields change until persistence has succeeded.
+            self.stop_telemetry()
+            for key in ('mqtt_server','mqtt_port','mqtt_topic','mqtt_username','mqtt_password'):
+                setattr(self, key, desired.get(key))
+            self.update_interval = interval
+            try:
+                if not desired['enabled'] or not desired['mqtt_server']:
+                    if self.mqtt_client:
+                        self.mqtt_client.disconnect()
+                        self.mqtt_client.loop_stop()
+                        self.mqtt_client = None
+                else:
+                    self.configure_mqtt(**{k: desired.get(k) for k in ('mqtt_server','mqtt_port','mqtt_topic','mqtt_username','mqtt_password')})
+                if desired['enabled']:
+                    self.start_telemetry()
+            except Exception as exc:
+                self.logger.error('Telemetry activation failed: %s', exc)
+                return {'status': 'saved', 'saved': True, 'runtime_applied': False,
+                        'error': 'Settings saved, but telemetry activation failed; retry after checking the broker or worker'}, 502
+            return {'status':'configured', 'saved': True, 'runtime_applied': True,
+                    **{k:v for k,v in desired.items() if k not in ('mqtt_username','mqtt_password')}}, 200

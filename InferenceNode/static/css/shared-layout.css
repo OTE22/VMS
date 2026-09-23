@@ -1,0 +1,15 @@
+/* Keep navigation inside the viewport instead of widening the document. */
+.navbar > .container-fluid { gap: .5rem 1rem; }
+.navbar .navbar-collapse { min-width: 0; }
+.navbar .navbar-nav { flex-wrap: wrap; }
+@media (min-width: 1400px) {
+    .navbar .navbar-collapse { gap: .5rem 1rem; }
+    .navbar .navbar-collapse > .navbar-nav:first-child { min-width: 0; }
+    .navbar .navbar-collapse > .navbar-nav:last-child { flex-shrink: 0; }
+}
+@media (max-width: 1399.98px) {
+    .navbar > .container-fluid { flex-wrap: wrap; }
+    .navbar .navbar-brand { white-space: normal; overflow-wrap: anywhere; min-width: 0; flex: 1; margin-right: 0; }
+    .navbar .navbar-toggler { flex-shrink: 0; }
+    .navbar .navbar-collapse { flex-basis: 100%; }
+}

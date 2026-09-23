@@ -1129,7 +1129,7 @@ class InferenceNode:
                 except Exception:
                     uid = None
                 try:
-                    row = _media.ingest_upload(file, original_filename=file.filename, created_by=uid)
+                    row = _media.ingest_upload(file, original_filename=file.filename, created_by=uid, verify_video=True)
                 except _media.MediaIngestError as e:
                     self._audit_event('media_upload_rejected', current_user, file.filename,
                                       {'code': e.code, 'reason': str(e)})
@@ -1162,6 +1162,11 @@ class InferenceNode:
                 from InferenceNode import media_registry as _media
                 out = []
                 for a in _media.list_assets():
+                    if a['status'] == 'AVAILABLE':
+                        _media.servable_path(a['relative_path'])
+                        a = _media.get_by_path(a['relative_path'])
+                        if a is None:
+                            continue
                     refs = _media.referencing_pipelines(a["relative_path"])
                     out.append({
                         "media_id": a["media_id"],
@@ -1205,7 +1210,7 @@ class InferenceNode:
                                     'hint': 'repoint or delete those pipelines, or pass ?force=true'}), 409
                 if outcome != 'deleted':
                     self.logger.error(f"Media delete failed for {media_id}: {r.get('error')}")
-                    return jsonify({'error': 'Delete failed; the media asset is unchanged'}), 500
+                    return jsonify({'error': 'Delete failed; refresh the media status before retrying'}), 500
                 self._audit_event('media_deleted', current_user, r.get('relative_path'),
                                   {'media_id': media_id, 'forced': force,
                                    'was_referenced_by': [p['pipeline_id'] for p in (r.get('was_referenced_by') or [])]})
@@ -1441,81 +1446,15 @@ class InferenceNode:
         @self.app.route('/api/telemetry/configure', methods=['POST'])
         @self._admin_csrf
         def configure_telemetry():
-            """Configure telemetry settings"""
+            if not self.telemetry:
+                return jsonify({'error': 'Telemetry service not available'}), 503
             try:
-                data = request.get_json()
-                
-                if not self.telemetry:
-                    return jsonify({'error': 'Telemetry service not available'}), 400
-                
-                enabled = data.get('enabled', True)
-                publish_interval = data.get('publish_interval', 30)
-                mqtt_server = data.get('mqtt_server', '')
-                mqtt_port = data.get('mqtt_port', 1883)
-                mqtt_topic = data.get('mqtt_topic', 'infernode/telemetry')
-                # MQTT credentials: stored ENCRYPTED in PostgreSQL, redacted on GET. A '***'
-                # echo keeps the stored value; null clears; a new value replaces.
-                from InferenceNode import node_settings_store as _nss
-                from InferenceNode.pipeline_store import unredact_into as _unredact
-                stored_tel = _nss.get_setting(_nss.KEY_TELEMETRY, runtime=True) or {}
-                creds = _unredact({k: stored_tel.get(k) for k in ('mqtt_username', 'mqtt_password')},
-                                  {k: data.get(k) for k in ('mqtt_username', 'mqtt_password') if k in data})
-                mqtt_username = creds.get('mqtt_username') if creds else stored_tel.get('mqtt_username')
-                mqtt_password = creds.get('mqtt_password') if creds else stored_tel.get('mqtt_password')
-                
-                import math
-                try:
-                    publish_interval = float(publish_interval)
-                    mqtt_port = int(mqtt_port)
-                    if type(enabled) is not bool or not math.isfinite(publish_interval) or not 5 <= publish_interval <= 300 or not 1 <= mqtt_port <= 65535:
-                        raise ValueError('Invalid telemetry interval, port or enabled value')
-                    if not isinstance(mqtt_server, str) or not isinstance(mqtt_topic, str):
-                        raise ValueError('MQTT server and topic must be strings')
-                except (TypeError, ValueError) as exc:
-                    return jsonify({'error': str(exc)}), 400
-                desired = dict(mqtt_server=mqtt_server, mqtt_port=mqtt_port, mqtt_topic=mqtt_topic,
-                               mqtt_username=mqtt_username, mqtt_password=mqtt_password,
-                               update_interval=publish_interval, running=enabled)
-                previous = {key: getattr(self.telemetry, key, None) for key in desired}
-                for key, value in desired.items():
-                    setattr(self.telemetry, key, value)
-                try:
-                    self._save_settings()
-                except Exception:
-                    for key, value in previous.items():
-                        setattr(self.telemetry, key, value)
-                    raise
-                # Saved desired state is durable before attempting network changes.
-                self.telemetry.running = previous['running']
-                try:
-                    if mqtt_server:
-                        self.telemetry.configure_mqtt(mqtt_server=mqtt_server, mqtt_port=mqtt_port,
-                            mqtt_topic=mqtt_topic, mqtt_username=mqtt_username, mqtt_password=mqtt_password)
-                    elif getattr(self.telemetry, 'mqtt_client', None):
-                        self.telemetry.mqtt_client.disconnect()
-                        self.telemetry.mqtt_client.loop_stop()
-                        self.telemetry.mqtt_client = None
-                    if enabled:
-                        self.telemetry.start_telemetry()
-                    else:
-                        self.telemetry.stop_telemetry()
-                except Exception as exc:
-                    return jsonify({'status': 'saved', 'saved': True,
-                                    'error': f'Configuration saved, but telemetry activation failed: {exc}'}), 502
+                result, status = self.telemetry.apply_settings(request.get_json(silent=True))
+                return jsonify(result), status
+            except Exception:
+                self.logger.exception('Telemetry configuration persistence failed')
+                return jsonify({'error': 'Could not save telemetry settings; runtime unchanged'}), 500
 
-                return jsonify({
-                    'status': 'configured',
-                    'enabled': enabled,
-                    'publish_interval': publish_interval,
-                    'mqtt_server': mqtt_server,
-                    'mqtt_port': mqtt_port,
-                    'mqtt_topic': mqtt_topic
-                })
-                
-            except Exception as e:
-                self.logger.error(f"Telemetry configuration error: {str(e)}")
-                return jsonify({'error': str(e)}), 500
-        
         @self.app.route('/api/telemetry/config', methods=['GET'])
         def get_telemetry_config():
             """Get current telemetry configuration"""
@@ -1535,6 +1474,10 @@ class InferenceNode:
                     'mqtt_password': '***' if getattr(self.telemetry, 'mqtt_password', None) else '',
                 }
                 
+                from InferenceNode import node_settings_store as store
+                config.update(store.get_setting(store.KEY_TELEMETRY) or {})
+                config['running'] = bool(self.telemetry.running)
+                config['worker_alive'] = bool(self.telemetry.telemetry_thread and self.telemetry.telemetry_thread.is_alive())
                 return jsonify(config)
                 
             except Exception as e:
@@ -1546,34 +1489,12 @@ class InferenceNode:
             """Get current telemetry data"""
             try:
                 if not self.telemetry:
-                    # Return mock data if telemetry service not available
-                    return jsonify({
-                        'metrics': {
-                            'cpu': 0,
-                            'memory': 0,
-                            'disk': 0,
-                            'temperature': None
-                        },
-                        'system': {
-                            'uptime': int(time.time() - self.app_start_time),
-                            'node_id': self.node_id,
-                            'platform': parse_windows_platform(platform.platform()),
-                            'cpu_cores': self.node_info.get('cpu_count', 0),
-                            'total_memory': (self.node_info.get('memory_gb') or 0) * 1024**3,
-                            'disk_space': 0,
-                            'gpu_info': 'Not available'
-                        },
-                        'network': {
-                            'ip_address': 'Unknown',
-                            'hostname': platform.node(),
-                            'usage_percent': 0,
-                            'bytes_recv': 0,
-                            'bytes_sent': 0
-                        }
-                    })
-                
+                    return jsonify({'error': 'Telemetry service unavailable', 'available': False}), 503
+
                 # Get telemetry data from telemetry service
                 system_info = self.telemetry.get_system_info()
+                if system_info.get('error'):
+                    return jsonify({'error': 'Metric collection failed', 'available': False}), 503
                 
                 # Transform the data to match what the frontend expects
                 telemetry_data = {

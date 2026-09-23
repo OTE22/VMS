@@ -127,7 +127,7 @@ def test_model_upload_fields_and_artifact_hash(live_forms):
 
 
 def test_media_upload_registry_and_canonical_reference(live_forms):
-    data = b'\x00\x00\x00\x18ftypmp42' + b'AUDIT' * 40
+    data = playable_video_bytes()
     r = live_forms['client'].post('/api/media/upload-video', headers={'X-CSRFToken': live_forms['csrf']},
         data={'file': (io.BytesIO(data), 'audit clip.mp4')})
     assert r.status_code == 200, r.json
@@ -737,3 +737,142 @@ def test_publisher_webhook_test_requires_and_supplies_pipeline(live_forms,monkey
     r=live_forms['send']('/api/publisher/test-favorites',data)
     assert r.status_code==200,r.json
     assert seen[0][0]['pipeline_id']==pipeline_id==seen[0][1]['pipeline_id']
+
+
+def playable_video_bytes():
+    import cv2, numpy as np, tempfile
+    with tempfile.TemporaryDirectory() as directory:
+        path = str(Path(directory) / 'clip.mp4')
+        writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*'mp4v'), 5, (32, 32))
+        assert writer.isOpened()
+        writer.write(np.zeros((32, 32, 3), dtype=np.uint8)); writer.release()
+        return Path(path).read_bytes()
+
+# Admin, telemetry and media regression checks (isolated PostgreSQL).
+def three_user(env):
+    r=env['send']('/api/users',{'username':uuid.uuid4().hex,'password':'Isolated-Password-123','role':'user','must_change_password':False})
+    assert r.status_code==201
+    return r.json['user']['id']
+
+@pytest.mark.parametrize('payload',[{}, {'active':'false'}, {'active':1}])
+def test_three_admin_requires_explicit_boolean(live_forms,payload):
+    uid=three_user(live_forms)
+    assert live_forms['send'](f'/api/users/{uid}/active',payload,method='PUT').status_code==400
+    assert one(live_forms,'SELECT is_active FROM users WHERE id=:id',id=uid)['is_active']
+
+def test_three_admin_validation_and_permission_audit_failure(live_forms,monkeypatch):
+    uid=three_user(live_forms);pid,_=pipeline(live_forms)
+    assert live_forms['send'](f'/api/users/{uid}',{'email':'invalid'},method='PATCH').status_code==400
+    assert live_forms['send']('/api/users',['invalid']).status_code==400
+    assert live_forms['send'](f'/api/pipelines/{pid}/access/{uid}',{'can_edit':'false'},method='PUT').status_code==400
+    import InferenceNode.pipeline_access_routes as routes
+    monkeypatch.setattr(routes,'record_audit',lambda **kw:(_ for _ in ()).throw(RuntimeError('isolated audit failure')))
+    r=live_forms['send'](f'/api/pipelines/{pid}/access/{uid}',{'can_view':True},method='PUT')
+    assert r.status_code==200 and r.json['saved'] and r.json['audit_recorded'] is False
+
+def test_three_last_admin_concurrent_demotions(live_forms):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from InferenceNode.auth import service as svc
+    from InferenceNode.auth.models import User
+    # Leave exactly two admins for this isolated check, restoring all afterward.
+    svc.create_user(None,username=uuid.uuid4().hex,password='Isolated-Password-123',role='admin')
+    with live_forms['engine'].connect() as c:
+        admins=c.execute(text("SELECT id,permissions_version FROM users WHERE role='admin' AND is_active")).all()
+    with live_forms['engine'].begin() as c:
+        for row in admins[2:]:c.execute(text("UPDATE users SET role='user' WHERE id=:id"),{'id':row.id})
+    barrier=Barrier(2)
+    def demote(row):
+        barrier.wait(timeout=10)
+        try:svc.set_role(None,row.id,'user');return 'saved'
+        except svc.UserOpError:return 'refused'
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:assert sorted(pool.map(demote,admins[:2]))==['refused','saved']
+        assert one(live_forms,"SELECT count(*) n FROM users WHERE role='admin' AND is_active")['n']==1
+    finally:
+        with live_forms['engine'].begin() as c:
+            for row in admins:c.execute(text("UPDATE users SET role='admin',permissions_version=:v WHERE id=:id"),{'id':row.id,'v':row.permissions_version})
+
+def three_telemetry(**kw):
+    return {'enabled':False,'publish_interval':17,'mqtt_server':'','mqtt_port':1883,'mqtt_topic':'audit',**kw}
+
+def test_three_telemetry_secrets_and_failed_save_preserve_state(live_forms,monkeypatch):
+    from InferenceNode import config_secrets as cs,node_settings_store as nss
+    assert live_forms['send']('/api/telemetry/configure',three_telemetry(mqtt_password='isolated-secret')).status_code==200
+    before=one(live_forms,"SELECT value FROM node_settings WHERE key='telemetry'")['value']
+    cs.reload_keys('/nonexistent')
+    try:
+        assert live_forms['send']('/api/telemetry/configure',three_telemetry()).status_code==503
+        assert one(live_forms,"SELECT value FROM node_settings WHERE key='telemetry'")['value']==before
+    finally:assert cs.reload_keys()
+    monkeypatch.setattr(nss,'set_setting',lambda *a,**kw:(_ for _ in ()).throw(RuntimeError('isolated write failure')))
+    assert live_forms['send']('/api/telemetry/configure',three_telemetry(publish_interval=33)).status_code==500
+    assert live_forms['node'].telemetry.update_interval==17
+
+def test_three_telemetry_disable_never_connects_and_errors_are_visible(live_forms,monkeypatch):
+    t=live_forms['node'].telemetry
+    def forbidden(**kw):raise AssertionError('Disable must not connect')
+    monkeypatch.setattr(t,'configure_mqtt',forbidden)
+    r=live_forms['send']('/api/telemetry/configure',three_telemetry(mqtt_server='broker.invalid'))
+    assert r.status_code==200 and not t.running
+    monkeypatch.setattr(t,'get_system_info',lambda:{'error':'isolated collection failure'})
+    r=live_forms['client'].get('/api/telemetry');assert r.status_code==503 and r.json['available'] is False
+
+def test_three_telemetry_restart_is_single_worker():
+    from InferenceNode.telemetry import NodeTelemetry
+    from threading import Event
+    t=NodeTelemetry('isolated');sampled=Event();t.get_system_info=lambda:(sampled.set() or {})
+    t.update_interval=300;t.start_telemetry();assert sampled.wait(5);old=t.telemetry_thread
+    t.stop_telemetry();assert not old.is_alive()
+    t.start_telemetry()
+    try:assert t.telemetry_thread is not old and not old.is_alive()
+    finally:t.stop_telemetry()
+
+def three_media(env):
+    r=env['client'].post('/api/media/upload-video',headers={'X-CSRFToken':env['csrf']},data={'file':(io.BytesIO(playable_video_bytes()),'test-'+uuid.uuid4().hex+'.mp4')})
+    assert r.status_code==200,r.json
+    return r.json
+
+def test_three_media_validation_missing_and_delete_recovery(live_forms,monkeypatch):
+    from InferenceNode import media_registry as mr,artifact_paths as ap
+    r=live_forms['client'].post('/api/media/upload-video',headers={'X-CSRFToken':live_forms['csrf']},data={'file':(io.BytesIO(b'not a video'),'bad.mp4')})
+    assert r.status_code==400
+    row=three_media(live_forms);path=ap.resolve('media',row['relative_source']);real=mr.os.replace
+    def fail(src,dst):
+        if src==path:raise OSError('isolated move failure')
+        return real(src,dst)
+    monkeypatch.setattr(mr.os,'replace',fail)
+    assert live_forms['send']('/api/media/'+row['media_id'],method='DELETE').status_code==500
+    assert mr.servable_path(row['relative_source'])==path
+    Path(path).unlink()
+    result=live_forms['client'].get('/api/media')
+    entry=next(m for m in result.json['media'] if m['media_id']==row['media_id'])
+    assert entry['status']=='MISSING'
+
+def test_three_media_unique_uploads_and_network_references(live_forms):
+    from concurrent.futures import ThreadPoolExecutor
+    from werkzeug.datastructures import FileStorage
+    from InferenceNode import media_registry as mr
+    from InferenceNode.pipeline_repository import repository
+    def upload(_):return mr.ingest_upload(FileStorage(stream=io.BytesIO(b'fixture')),original_filename='same.mp4',timestamp='same-time')
+    with ThreadPoolExecutor(max_workers=2) as pool:rows=list(pool.map(upload,range(2)))
+    assert rows[0]['relative_path']!=rows[1]['relative_path']
+    pid,_=pipeline(live_forms);cfg=repository.get(pid)['config'];cfg['frame_source']={'capture_type':'ip_camera','config':{'source':'rtsp://camera.invalid/'+rows[0]['relative_path']}}
+    repository.update(pid,config=cfg)
+    assert not any(p['pipeline_id']==pid for p in mr.referencing_pipelines(rows[0]['relative_path']))
+
+def test_three_media_reference_save_cannot_race_deletion(live_forms,monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from InferenceNode import media_registry as mr
+    from InferenceNode.pipeline_repository import repository
+    row=three_media(live_forms);pid,_=pipeline(live_forms);entered=Event();release=Event();real=mr.referencing_pipelines
+    def hold(rel):
+        refs=real(rel);entered.set();assert release.wait(10);return refs
+    monkeypatch.setattr(mr,'referencing_pipelines',hold)
+    cfg=repository.get(pid)['config'];cfg['frame_source']={'capture_type':'video_file','config':{'relative_source':row['relative_source']}}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        deletion=pool.submit(mr.delete_media,row['media_id']);assert entered.wait(10)
+        save=pool.submit(repository.update,pid,config=cfg);release.set()
+        assert deletion.result(timeout=15)['outcome']=='deleted'
+        with pytest.raises(ValueError):save.result(timeout=15)

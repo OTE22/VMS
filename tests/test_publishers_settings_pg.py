@@ -121,7 +121,7 @@ def test_update_honors_type_and_redaction_safe_merge(env):
     p = pst.create_publisher(name="a", type="mqtt", config={"server": "b", "password": "pw"})
     up = pst.update_publisher(p["id"], type="webhook", config={"server": "b2", "password": "***"})
     assert up["type"] == "webhook" and up["config"]["server"] == "b2"
-    assert pst.get_publisher(p["id"], runtime=True)["config"]["password"] == "pw"     # sentinel kept secret
+    assert "password" not in pst.get_publisher(p["id"], runtime=True)["config"]  # type changes do not carry credentials
     pst.update_publisher(p["id"], config={"password": None})
     assert pst.get_publisher(p["id"], runtime=True)["config"]["password"] is None      # explicit clear
 

@@ -8,11 +8,17 @@
   CSP needs no 'unsafe-inline' for it.)
 #}
 
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/admin-workspace.css', v='readability-3') }}">
+{% endblock %}
+
 {% block content %}
+<div class="ae-workspace">
 <div class="ae-page-header">
   <div>
-    <h1><i class="fas fa-users-gear me-2" aria-hidden="true"></i>Users &amp; Access</h1>
-    <p class="ae-subtitle">Manage user accounts, security and pipeline permissions.</p>
+    <div class="ae-eyebrow">Administration / People</div>
+    <h1>Users &amp; access</h1>
+    <p class="ae-subtitle">Give your team the right access. Manage accounts, roles and pipeline permissions in one place.</p>
   </div>
   <div class="d-flex gap-2">
     <button class="btn btn-outline-secondary" id="btn-refresh" type="button">
@@ -49,7 +55,7 @@
   <div class="card-body py-3">
     <div class="ae-filterbar">
       <div class="ae-search">
-        <label class="form-label visually-hidden" for="user-search">Search users</label>
+        <label class="form-label" for="user-search">Search users</label>
         <div class="input-group">
           <span class="input-group-text"><i class="fas fa-magnifying-glass" aria-hidden="true"></i></span>
           <input type="search" class="form-control" id="user-search"
@@ -59,7 +65,7 @@
         </div>
       </div>
       <div>
-        <label class="form-label visually-hidden" for="filter-role">Filter by role</label>
+        <label class="form-label" for="filter-role">Filter by role</label>
         <select class="form-select" id="filter-role">
           <option value="all">Role: All</option>
           <option value="admin">Administrators</option>
@@ -67,7 +73,7 @@
         </select>
       </div>
       <div>
-        <label class="form-label visually-hidden" for="filter-status">Filter by status</label>
+        <label class="form-label" for="filter-status">Filter by status</label>
         <select class="form-select" id="filter-status">
           <option value="all">Status: All</option>
           <option value="active">Active</option>
@@ -83,7 +89,7 @@
      or trapping the row action menus - see armyeye-admin.css. -->
 <div class="card ae-menu-safe">
   <div class="card-header d-flex justify-content-between align-items-center">
-    <span><i class="fas fa-list me-2" aria-hidden="true"></i>Users</span>
+    <div><h2 class="ae-section-title">Team directory</h2><p class="ae-section-description">Account status, access and activity at a glance.</p></div>
     <small class="text-muted" id="result-count" aria-live="polite"></small>
   </div>
   <div class="table-responsive ae-allow-overflow">
@@ -109,6 +115,8 @@
   Changing a role, disabling an account or resetting a password immediately ends that
   user's active sessions. Usernames cannot be changed after the account is created.
 </p>
+
+</div>
 
 <!-- ============================================================ Add User -->
 <div class="modal fade" id="addUserModal" tabindex="-1" aria-labelledby="addUserTitle" aria-hidden="true">

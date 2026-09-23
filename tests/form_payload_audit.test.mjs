@@ -68,17 +68,17 @@ function handler(pageName, form, values) {
     const sent=[];
     const elements=Object.fromEntries(Object.entries(values).map(([k,v])=>[k,typeof v==='boolean'?{checked:v}:{value:v}]));
     elements.destinationType = {value:''};
-    elements[form]={addEventListener:(_,f)=>{submit=f;}};
+    elements[form]={addEventListener:(_,f)=>{submit=f;},querySelectorAll:()=>[]};
     const ctx=vm.createContext({document:{getElementById:id=>elements[id],querySelectorAll:()=>[]},
         fetch:async(url,options)=>{sent.push({url,...options});return {ok:true,json:async()=>({pipeline_id:'new-id'})};},
-        showAlert(){},startTelemetryUpdates(){}, resetForm(){},refreshPipelines:async()=>{},
+        showAlert(){},telemetryAlert(){},loadTelemetryConfig(){},startTelemetryUpdates(){}, resetForm(){},refreshPipelines:async()=>{},
         getFrameSourceConfig:()=>({source:'rtsp://camera.invalid/live',buffer_size:0}),
         collectFrameSourceConfigFromSchema:()=>({isValid:true,missingFields:[]}),
     });
-    vm.runInContext('var pipelineSavePending=false; var editingDestinationId=null; var editingPipelineId=null; var currentDestinations=[{type:"null",config:{},enabled:false}];',ctx);
+    vm.runInContext('var telemetrySavePending=false; var telemetryDraftVersion=0; var pipelineSavePending=false; var editingDestinationId=null; var editingPipelineId=null; var currentDestinations=[{type:"null",config:{},enabled:false}];',ctx);
     if (pageName === 'pipeline_builder') vm.runInContext(fn(source, 'escapeBuilderText'), ctx);
     vm.runInContext(script,ctx);
-    return {submit:()=>submit({preventDefault(){}}),sent,ctx};
+    return {submit:()=>submit.call(elements[form],{preventDefault(){}}),sent,ctx};
 }
 test('node form sends exactly name, selected log level and numeric deployment port',async()=>{
     const h=handler('node_info','configForm',{nodeName:'New node',logLevel:'WARNING',webPort:'5555'});
@@ -112,11 +112,11 @@ test('Publisher test form posts parsed JSON and selected favorite IDs', async ()
     const start=source.indexOf("document.getElementById('testPublishForm').addEventListener");
     const script=source.slice(start,source.indexOf('\n});',start)+4);
     let submit; let sent;
-    const ctx=vm.createContext({document:{getElementById:id=>id==='testPublishForm'?{addEventListener:(_,fn)=>{submit=fn;}}:{value:'{"value":42}'},
+    const ctx=vm.createContext({document:{getElementById:id=>id==='testPublishForm'?{addEventListener:(_,fn)=>{submit=fn;}}:{value:id==='testPipeline'?'pipeline-1':'{"value":42}'},
         querySelectorAll:()=>[{value:'favorite-1'},{value:'favorite-2'}]},
-        fetch:async(url,options)=>{sent={url,...options};return {ok:true,json:async()=>({message:'Test completed',results:{}})};},showAlert(){}});
+        fetch:async(url,options)=>{sent={url,...options};return {ok:true,json:async()=>({message:'Test completed',results:{}})};},publisherAlert(){},beginPublisherOperation:()=>true,endPublisherOperation(){},publishStats:{total:0,errors:0}});
     vm.runInContext(script,ctx);
     await submit({preventDefault(){}});
     assert.equal(sent.url,'/api/publisher/test-favorites');
-    assert.deepEqual(JSON.parse(sent.body),{message:{value:42},favorite_ids:['favorite-1','favorite-2']});
+    assert.deepEqual(JSON.parse(sent.body),{message:{value:42},favorite_ids:['favorite-1','favorite-2'],pipeline_id:'pipeline-1'});
 });

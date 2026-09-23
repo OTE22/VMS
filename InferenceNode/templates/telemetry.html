@@ -134,6 +134,7 @@
                 </h5>
             </div>
             <div class="card-body">
+                <div id="telemetryState" class="small text-muted mb-2" role="status"></div>
                 <form id="telemetryConfigForm">
                     <div class="mb-3">
                         <label for="telemetryEnabled" class="form-label">
@@ -186,6 +187,26 @@ let telemetryData = {
 let updateInterval;
 
 // Initialize charts
+let telemetryPollPending = false;
+let telemetrySavePending = false;
+let telemetryDraftVersion = 0;
+function telemetryAlert(type, message) { showAlert(type, esc(message)); }
+async function loadTelemetryConfig() {
+    const version = telemetryDraftVersion;
+    try {
+        const response = await fetch('/api/telemetry/config');
+        const config = await response.json();
+        if (!response.ok) throw new Error(config.error || 'Could not load telemetry settings');
+        if (version !== telemetryDraftVersion || telemetrySavePending) return;
+        for (const [key, id] of Object.entries({publish_interval:'publishInterval', mqtt_server:'mqttServer', mqtt_port:'mqttPort', mqtt_topic:'telemetryTopic'})) {
+            if (config[key] !== undefined && config[key] !== null) document.getElementById(id).value = config[key];
+        }
+        document.getElementById('telemetryEnabled').checked = !!config.enabled;
+        document.getElementById('telemetryState').textContent = `Saved publishing: ${config.enabled ? 'enabled' : 'disabled'}; worker: ${config.running ? 'running' : 'stopped'}`;
+    } catch (error) { telemetryAlert('error', error.message); }
+}
+document.getElementById('telemetryConfigForm').addEventListener('input', () => { telemetryDraftVersion++; });
+
 function initializeCharts() {
     const chartConfig = {
         type: 'line',
@@ -315,7 +336,7 @@ function updateCharts(data) {
 function updateChart(chart, value) {
     // Skip update if value is null or undefined
     if (value === null || value === undefined) {
-        value = 0;  // Use 0 as fallback for display
+        value = null;  // Chart.js renders a missing sample as a gap
     }
     
     chart.data.datasets[0].data.push(value);
@@ -330,10 +351,13 @@ function updateChart(chart, value) {
 
 // Fetch telemetry data
 async function fetchTelemetryData() {
+    if (telemetryPollPending) return;
+    telemetryPollPending = true;
     try {
         const response = await fetch('/api/telemetry');
         const data = await response.json();
         
+        if (!response.ok) throw new Error(data.error || 'Metrics unavailable');
         if (response.ok) {
             updateCharts(data.metrics);
             // system block: uptime + node id (were fetched and discarded before)
@@ -344,8 +368,8 @@ async function fetchTelemetryData() {
             if (nid && sys.node_id) nid.textContent = sys.node_id;
         }
     } catch (error) {
-        console.error('Failed to fetch telemetry data:', error);
-    }
+        for (const id of ['currentCPU','currentMemory','currentDisk','currentTemp']) document.getElementById(id).textContent = 'Unavailable';
+    } finally { telemetryPollPending = false; }
 }
 
 // Format bytes
@@ -368,6 +392,11 @@ function formatUptime(seconds) {
 // Handle telemetry configuration form
 document.getElementById('telemetryConfigForm').addEventListener('submit', async function(e) {
     e.preventDefault();
+    if (telemetrySavePending) return;
+    telemetrySavePending = true;
+    telemetryDraftVersion++;
+    const controls = Array.from(this.querySelectorAll('input, button'));
+    controls.forEach(el => { el.disabled = true; });
     
     const config = {
         enabled: document.getElementById('telemetryEnabled').checked,
@@ -389,15 +418,19 @@ document.getElementById('telemetryConfigForm').addEventListener('submit', async 
         const result = await response.json();
         
         if (response.ok) {
-            showAlert('success', 'Telemetry configuration updated successfully!');
+            telemetryAlert('success', 'Telemetry configuration updated successfully!');
             
             // Live charts are independent of whether MQTT publishing is enabled.
             startTelemetryUpdates();
         } else {
-            showAlert('error', `Failed to update configuration: ${result.error}`);
+            telemetryAlert(result.saved ? 'warning' : 'error', result.saved ? `Saved, but activation failed: ${result.error}` : `Settings not saved: ${result.error}`);
         }
     } catch (error) {
-        showAlert('error', `Failed to update configuration: ${error.message}`);
+        telemetryAlert('error', `Failed to update configuration: ${error.message}`);
+    } finally {
+        telemetrySavePending = false;
+        controls.forEach(el => { el.disabled = false; });
+        loadTelemetryConfig();
     }
 });
 
@@ -429,27 +462,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // Auto-refresh pipeline statistics every 30 seconds
     setInterval(loadPipelineStatistics, 30000);
     
-    // Load initial configuration
-    fetch('/api/telemetry/config')
-        .then(response => response.json())
-        .then(config => {
-            if (config.enabled !== undefined) {
-                document.getElementById('telemetryEnabled').checked = config.enabled;
-            }
-            if (config.publish_interval) {
-                document.getElementById('publishInterval').value = config.publish_interval;
-            }
-            if (config.mqtt_server) {
-                document.getElementById('mqttServer').value = config.mqtt_server;
-            }
-            if (config.mqtt_port) {
-                document.getElementById('mqttPort').value = config.mqtt_port;
-            }
-            if (config.mqtt_topic) {
-                document.getElementById('telemetryTopic').value = config.mqtt_topic;
-            }
-        })
-        .catch(error => console.log('No telemetry config found'));
+    loadTelemetryConfig();
 });
 
 // Pipeline Statistics Functions
@@ -477,10 +490,10 @@ function updatePipelineStatistics(stats) {
         document.getElementById('avgFPS').textContent = (stats.avg_fps || 0).toFixed(1);
         document.getElementById('avgLatency').textContent = Math.round(stats.avg_latency || 0) + 'ms';
     } else {
-        document.getElementById('totalPipelines').textContent = '0';
-        document.getElementById('activePipelines').textContent = '0';
-        document.getElementById('avgFPS').textContent = '0.0';
-        document.getElementById('avgLatency').textContent = '0ms';
+        document.getElementById('totalPipelines').textContent = 'Unavailable';
+        document.getElementById('activePipelines').textContent = 'Unavailable';
+        document.getElementById('avgFPS').textContent = '—';
+        document.getElementById('avgLatency').textContent = '—';
     }
 }
 

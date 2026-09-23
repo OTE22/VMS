@@ -88,7 +88,9 @@ def set_setting(key: str, value: dict, *, session=None) -> dict:
     incoming = _validate(key, value)
     with get_session(session) as s:
         row = s.execute(select(NodeSetting).where(NodeSetting.key == key)).scalar_one_or_none()
-        stored_plain, _ok = config_secrets.decrypt_config((row.value if row else None) or {})
+        stored_plain, ok = config_secrets.decrypt_config((row.value if row else None) or {})
+        if not ok:
+            raise config_secrets.SecretsUnavailable('Existing settings credentials cannot be decrypted')
         merged = unredact_into(stored_plain, {**stored_plain, **incoming})
         enc = config_secrets.encrypt_config(merged)
         assert not config_secrets.contains_plaintext_secret(enc)

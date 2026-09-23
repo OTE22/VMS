@@ -1,0 +1,88 @@
+{
+  "releases": [
+    {
+      "container": "VMS",
+      "service": "vms",
+      "compose": [
+        "docker",
+        "compose",
+        "--project-directory",
+        "/home/itdirect-ai/Desktop/VMS",
+        "--env-file",
+        "/home/itdirect-ai/Desktop/VMS/.env",
+        "-p",
+        "armyeye",
+        "-f",
+        "/home/itdirect-ai/Desktop/VMS/compose.yaml",
+        "-f",
+        "/home/itdirect-ai/Desktop/VMS/compose.prod.yaml",
+        "-f",
+        "/home/itdirect-ai/Desktop/VMS/compose.gpu.yaml"
+      ],
+      "release_image": "armyeye-vms:admin-telemetry-media-20260923t075737z",
+      "image_id": "sha256:cab8fc46ede25be5116d9192b34060764715e034e626403dc91a0031aa0c69c5",
+      "previous_image_id": "sha256:172b9b9e10617c8a0ee4f88c4a2559df6f19b228caf7fd81b61123a613a75d66",
+      "rollback_image": "armyeye-vms:before-admin-telemetry-media-20260923t075737z",
+      "configured_image": "armyeye-vms",
+      "hashes": {
+        "/app/InferenceNode/auth/service.py": "7feb55faf0d2c97558660fdd895b8450c11b22408344d92de30b68bbcb96c4b2",
+        "/app/InferenceNode/auth/admin_routes.py": "4a6b75f44ae94ef564f888c9af2384ec12286b1a9e5e14d9027eb38e3dbf8a4e",
+        "/app/InferenceNode/pipeline_access_routes.py": "d146d964da8781567eb54d14d008b69b2e129067d1bfb13a17ed3fd8ca793cec",
+        "/app/InferenceNode/node_settings_store.py": "f7fa622f713dcd5dad94273759fb06366aaed075141a15a4f7a31d706c70578f",
+        "/app/InferenceNode/telemetry.py": "ad9e19002daf7555ce8a1bcf83be14f9299634f307e11b59995e84db11b6ee69",
+        "/app/InferenceNode/media_registry.py": "7ee98814e79b99a9d3cad270d3419389845bd1f304ccd30f65c888d4c78284e5",
+        "/app/InferenceNode/media_guard.py": "66401b73e9aed622c2722a3833ba96baeb18b898c5dd3a98d52f484afef621cf",
+        "/app/InferenceNode/inference_node.py": "118739b26468a4966328451980c09bd6c797ac499c7b8f057b04125dff667e62",
+        "/app/InferenceNode/static/js/admin-users.js": "c115b69a44a78ee045c127ae4a1f9d948d95d974b69715e5be3635b3706f3d89",
+        "/app/InferenceNode/templates/telemetry.html": "42224e1f9971d467c3ec2ac8a525be5c28868ab506c250116291a013249cdd49",
+        "/app/InferenceNode/templates/media.html": "bc1358001cfe185ac33f0b68b26e81e7e912f9d886689fcb5785e1faa33ad1a4",
+        "/app/InferenceNode/pipeline_repository.py": "e001eb2da4cffe563773b37b98393be09ba4d4d7f2519eb0f12ef0f541e25c03"
+      },
+      "mounts": [
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/InferenceNode/pipelines",
+          "/app/InferenceNode/pipelines",
+          true
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/InferenceNode/logs",
+          "/app/InferenceNode/logs",
+          true
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/secrets/face-internal-ca.crt",
+          "/run/secrets/face_internal_ca",
+          false
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/secrets/armyeye_config_key",
+          "/run/secrets/armyeye_config_key",
+          false
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/InferenceNode/data",
+          "/app/InferenceNode/data",
+          true
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/InferenceNode/model_repository",
+          "/app/InferenceNode/model_repository",
+          true
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/InferenceNode/media",
+          "/app/InferenceNode/media",
+          true
+        ]
+      ],
+      "state": "deployed_verified"
+    }
+  ]
+}

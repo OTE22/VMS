@@ -12,6 +12,8 @@ import logging
 from flask import request, jsonify, render_template, current_app, abort
 from flask_login import current_user
 
+from sqlalchemy.exc import IntegrityError
+
 from . import service as svc
 from .flask_auth import admin_required
 
@@ -29,6 +31,16 @@ def _require_csrf():
         validate_csrf(token)
     except Exception:
         abort(400, description="CSRF validation failed")
+
+
+def _request_object():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        abort(400, description='Request must be a JSON object')
+    for key in ('active', 'must_change', 'must_change_password'):
+        if key in data and type(data[key]) is not bool:
+            abort(400, description=key + ' must be a boolean')
+    return data
 
 
 def _user_dict(u):
@@ -76,7 +88,7 @@ def register_admin_users(app):
     @admin_required
     def api_create_user():
         _require_csrf()
-        data = request.get_json(silent=True) or {}
+        data = _request_object()
         try:
             u = svc.create_user(
                 current_user,
@@ -90,6 +102,8 @@ def register_admin_users(app):
             return jsonify({"status": "success", "user": _user_dict(u)}), 201
         except svc.UserOpError as e:
             return jsonify({"error": str(e)}), 400
+        except IntegrityError:
+            return jsonify({"error": "Account conflicts with an existing record"}), 409
 
     @app.route("/api/users/<int:user_id>", methods=["PATCH"])
     @admin_required
@@ -97,7 +111,7 @@ def register_admin_users(app):
         """Edit profile fields only (email / full_name). Username is immutable and
         role/active/password keep their dedicated routes."""
         _require_csrf()
-        data = request.get_json(silent=True) or {}
+        data = _request_object()
         unknown = set(data) - {"email", "full_name"}
         if unknown:
             return jsonify({"error": f"Unsupported field(s): {', '.join(sorted(unknown))}. "
@@ -109,40 +123,50 @@ def register_admin_users(app):
             return jsonify({"status": "success", "user": _user_dict(u)})
         except svc.UserOpError as e:
             return jsonify({"error": str(e)}), 400
+        except IntegrityError:
+            return jsonify({"error": "Account conflicts with an existing record"}), 409
 
     @app.route("/api/users/<int:user_id>/role", methods=["PUT"])
     @admin_required
     def api_set_role(user_id):
         _require_csrf()
-        data = request.get_json(silent=True) or {}
+        data = _request_object()
         try:
             u = svc.set_role(current_user, user_id, data.get("role"))
             return jsonify({"status": "success", "user": _user_dict(u)})
         except svc.UserOpError as e:
             return jsonify({"error": str(e)}), 400
+        except IntegrityError:
+            return jsonify({"error": "Account conflicts with an existing record"}), 409
 
     @app.route("/api/users/<int:user_id>/active", methods=["PUT"])
     @admin_required
     def api_set_active(user_id):
         _require_csrf()
-        data = request.get_json(silent=True) or {}
+        data = _request_object()
         try:
-            u = svc.set_active(current_user, user_id, bool(data.get("active")))
+            if 'active' not in data:
+                return jsonify({'error': 'active is required'}), 400
+            u = svc.set_active(current_user, user_id, data['active'])
             return jsonify({"status": "success", "user": _user_dict(u)})
         except svc.UserOpError as e:
             return jsonify({"error": str(e)}), 400
+        except IntegrityError:
+            return jsonify({"error": "Account conflicts with an existing record"}), 409
 
     @app.route("/api/users/<int:user_id>/reset-password", methods=["POST"])
     @admin_required
     def api_reset_password(user_id):
         _require_csrf()
-        data = request.get_json(silent=True) or {}
+        data = _request_object()
         try:
             svc.reset_password(current_user, user_id, data.get("password") or "",
                                must_change=bool(data.get("must_change", True)))
             return jsonify({"status": "success"})
         except svc.UserOpError as e:
             return jsonify({"error": str(e)}), 400
+        except IntegrityError:
+            return jsonify({"error": "Account conflicts with an existing record"}), 409
 
     @app.route("/api/users/<int:user_id>", methods=["DELETE"])
     @admin_required
@@ -153,3 +177,5 @@ def register_admin_users(app):
             return jsonify({"status": "success"})
         except svc.UserOpError as e:
             return jsonify({"error": str(e)}), 400
+        except IntegrityError:
+            return jsonify({"error": "Account conflicts with an existing record"}), 409

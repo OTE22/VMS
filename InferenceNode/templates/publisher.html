@@ -518,7 +518,7 @@ function generateFormFieldsFromSchema(schema, prefix = '') {
                 fieldHtml = `
                     <div class="col-6">
                         <label for="${fieldId}" class="form-label">${field.label}${requiredStar}</label>
-                        <input type="password" autocomplete="new-password" class="form-control" id="${fieldId}" 
+                        <input type="password" autocomplete="new-password" class="form-control" id="${fieldId}"
                                placeholder="${field.placeholder || ''}" ${required}
                                title="${field.description || ''}">
                         <label class="form-check-label"><input type="checkbox" id="${fieldId}__clear"> Clear stored credential</label>
