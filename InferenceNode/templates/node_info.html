@@ -8,7 +8,7 @@
 {% endblock %}
 
 {% block content %}
-<div class="ae-workspace ae-operations">
+<div class="ae-workspace ae-operations" id="operationsWorkspace" data-can-manage="{{ 'true' if current_user.is_admin else 'false' }}">
 <div class="ae-page-header"><div><div class="ae-eyebrow">Operations / Node</div><h1>Node overview</h1><p class="ae-subtitle">System identity, hardware and configuration in one place.</p></div><span class="ae-refresh-status" id="pageStatus" role="status">Loading…</span></div>
 <div class="row g-4">
     <div class="col-lg-8">
@@ -226,7 +226,7 @@
                 <hr>
                 
                 <div class="d-grid gap-2">
-                    <button class="btn btn-outline-warning" id="nodeRestart" onclick="restartNode()">
+                    <button class="btn btn-outline-warning" {% if not current_user.is_admin %}disabled title="Administrator access required"{% endif %} id="nodeRestart" onclick="restartNode()">
                         <i class="fas fa-redo me-2"></i>Restart Node
                     </button>
                 </div>
@@ -258,31 +258,39 @@
 
 {% block scripts %}
 <script>
-// Alert function now handled by centralized notification system in app.js
-
-// Load node information
+const canManageOperations = document.getElementById('operationsWorkspace').dataset.canManage === 'true';
+let nodeBusy = false, nodeDirty = false, nodeSaving = false, nodeReady = false, nodeRestarting = false;
+let nodeSequence = 0;
+document.getElementById('configForm').addEventListener('input', () => { nodeDirty = true; });
 async function loadNodeInfo() {
+    if (nodeBusy || nodeSaving || nodeRestarting) return;
+    nodeBusy = true;
+    const sequence = ++nodeSequence;
     try {
-        const response = await fetch('/api/node/info');
-        const data = await response.json();
-        
-        if (response.ok && data.success) {
-            updateNodeInfo(data.data);
-        } else {
-            console.error('Failed to load node info:', data.error);
-            showAlert('error', 'Failed to load node information');
-        }
+        const r = await apiCall('/api/node/info');
+        if (sequence !== nodeSequence) return;
+        if (!r.ok || !r.data?.success) throw new Error(r.error || 'Node information is unavailable');
+        updateNodeInfo(r.data.data);
+        nodeReady = true;
+        document.getElementById('nodeFields').disabled = !canManageOperations;
+        document.getElementById('pageStatus').textContent = 'Updated ' + new Date().toLocaleTimeString() + ' · Refreshes every 30 seconds';
+        if (!nodeDirty) document.getElementById('nodeSaveStatus').textContent = (canManageOperations ? 'Saved configuration loaded.' : 'Read-only · Administrator access is required to change configuration.');
+        const badge = document.getElementById('nodeStatusDisplay'); badge.textContent = 'Connected'; badge.className = 'badge bg-success';
+        document.getElementById('statusIndicator').textContent = 'Connected';
     } catch (error) {
-        console.error('Error loading node info:', error);
-        showAlert('error', 'Error loading node information');
-    }
+        if (sequence !== nodeSequence) return;
+        document.getElementById('pageStatus').textContent = 'Refresh failed · ' + error.message;
+        const badge = document.getElementById('nodeStatusDisplay'); badge.textContent = 'Unavailable'; badge.className = 'badge bg-warning text-dark';
+        document.getElementById('statusIndicator').textContent = 'Unavailable';
+        if (!nodeReady) document.getElementById('nodeSaveStatus').textContent = 'Configuration unavailable. Use Refresh to retry.';
+    } finally { nodeBusy = false; }
 }
 
 // Update node information display
 function updateNodeInfo(info) {
     // System information
     document.getElementById('nodeId').textContent = info.node_id || 'Unknown';
-    document.getElementById('version').textContent = info.version || '1.0.0';
+    document.getElementById('version').textContent = info.version || 'Unknown';
     document.getElementById('platform').textContent = info.platform || 'Unknown';
     document.getElementById('architecture').textContent = info.architecture || 'Unknown';
     document.getElementById('pythonVersion').textContent = info.python_version || 'Unknown';
@@ -292,6 +300,8 @@ function updateNodeInfo(info) {
     document.getElementById('systemUptime').textContent = formatUptime(info.uptime || 0);
     document.getElementById('appUptime').textContent = formatUptime(info.app_uptime || 0);
     document.getElementById('startTime').textContent = info.start_time || 'Unknown';
+
+    document.getElementById('apiPort').textContent = info.config?.web_port ?? 'Unknown';
 
     // Hardware information
     if (info.hardware) {
@@ -329,9 +339,9 @@ function updateGPUInfo(gpuInfo) {
     
     const html = gpuInfo.map(gpu => `
         <div class="mb-2">
-            <strong>${gpu.name}</strong><br>
+            <strong>${esc(gpu.name)}</strong><br>
             <small class="text-muted">
-                Type: ${gpu.type}<br>
+                Type: ${esc(gpu.type)}<br>
                 Memory: ${gpu.memory_total ? formatBytes(gpu.memory_total) : 'Unknown'}${
                     // Used/free is the number that decides how many pipelines fit, and it is
                     // DEVICE-WIDE: a co-tenant on the same card is counted here on purpose.
@@ -341,7 +351,7 @@ function updateGPUInfo(gpuInfo) {
                 ${Number.isFinite(gpu.utilization_percent)
                     ? `Utilization: ${gpu.utilization_percent}%${
                         Number.isFinite(gpu.temperature_c) ? ` · ${gpu.temperature_c}°C` : ''}<br>` : ''}
-                Driver: ${gpu.driver_version || 'Unknown'}
+                Driver: ${esc(gpu.driver_version || 'Unknown')}
             </small>
         </div>
     `).join('');
@@ -360,13 +370,13 @@ function updateStorageInfo(storageInfo) {
     
     const html = storageInfo.map(disk => `
         <div class="mb-2">
-            <strong>${disk.device}</strong><br>
+            <strong>${esc(disk.device)}</strong><br>
             <div class="progress progress-sm">
-                <div class="progress-bar" style="width: ${disk.percent.toFixed(1)}%"></div>
+                <div class="progress-bar" style="width: ${(Number.isFinite(disk.percent) ? Math.max(0, Math.min(100, disk.percent)).toFixed(1) : 0)}%"></div>
             </div>
             <small class="text-muted">
-                ${formatBytes(disk.used)} / ${formatBytes(disk.total)} (${disk.percent.toFixed(1)}%)<br>
-                Mount: ${disk.mountpoint}
+                ${formatBytes(disk.used)} / ${formatBytes(disk.total)} (${(Number.isFinite(disk.percent) ? Math.max(0, Math.min(100, disk.percent)).toFixed(1) : 0)}%)<br>
+                Mount: ${esc(disk.mountpoint)}
             </small>
         </div>
     `).join('');
@@ -376,7 +386,7 @@ function updateStorageInfo(storageInfo) {
 
 // Update configuration form
 function updateConfiguration(config) {
-    if (!config) return;
+    if (!config || nodeDirty || nodeSaving) return;
     
     if (config.node_name) document.getElementById('nodeName').value = config.node_name;
     if (config.log_level) document.getElementById('logLevel').value = config.log_level;
@@ -387,76 +397,42 @@ function updateConfiguration(config) {
 function updateStatus(status) {
     if (!status) return;
     
-    const statusIndicator = document.getElementById('statusIndicator');
-    const statusClass = status.healthy ? 'text-success' : 'text-danger';
-    statusIndicator.innerHTML = `<i class="fas fa-circle ${statusClass}"></i>`;
-    
-    document.getElementById('loadAverage').textContent = (status.load_average || 0).toFixed(2);
-    document.getElementById('inferenceCount').textContent = status.inference_count || 0;
-    document.getElementById('errorCount').textContent = status.error_count || 0;
+    document.getElementById('loadAverage').textContent = Number.isFinite(status.cpu_percent) ? status.cpu_percent.toFixed(1) + '%' : '—';
+    document.getElementById('inferenceCount').textContent = status.active_pipelines ?? '—';
+    document.getElementById('errorCount').textContent = status.buffered_errors ?? '—';
 }
 
-// Configuration form handler
-document.getElementById('configForm').addEventListener('submit', async function(e) {
+// Save only editable fields; runtime/deployment settings remain informational.
+document.getElementById('configForm').addEventListener('submit', async e => {
     e.preventDefault();
-    
-    const config = {
-        node_name: document.getElementById('nodeName').value,
-        log_level: document.getElementById('logLevel').value,
-        web_port: parseInt(document.getElementById('webPort').value)
-    };
-    
+    if (!canManageOperations || !nodeReady || nodeSaving || nodeRestarting || !document.getElementById('configForm').reportValidity()) return;
+    const config = {node_name: document.getElementById('nodeName').value.trim(), log_level: document.getElementById('logLevel').value};
+    if (!config.node_name) { document.getElementById('nodeSaveStatus').textContent = 'Enter a node name.'; return; }
+    nodeSaving = true; ++nodeSequence;
+    document.getElementById('nodeFields').disabled = true;
+    document.getElementById('nodeSaveStatus').textContent = 'Saving…';
     try {
-        const response = await fetch('/api/node/config', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(config)
-        });
-        
-        const result = await response.json();
-        
-        if (response.ok) {
-            showAlert('success', 'Configuration updated successfully!');
-        } else {
-            showAlert('error', `Failed to update configuration: ${result.error}`);
-        }
-    } catch (error) {
-        showAlert('error', `Failed to update configuration: ${error.message}`);
-    }
+        const r = await apiCall('/api/node/config', {method:'POST', body:JSON.stringify(config)});
+        if (!r.ok || !r.data?.success) throw new Error(r.error || 'Configuration was not saved');
+        nodeDirty = false;
+        document.getElementById('nodeName').value = r.data.config?.node_name ?? config.node_name;
+        document.getElementById('nodeSaveStatus').textContent = 'Configuration saved.';
+    } catch(e) { document.getElementById('nodeSaveStatus').textContent = 'Save failed: ' + e.message; }
+    finally { nodeSaving = false; document.getElementById('nodeFields').disabled = !canManageOperations; }
 });
 
-// Action functions
 async function restartNode() {
-    if (!confirm('Are you sure you want to restart the node? This will interrupt any running inferences.')) {
-        return;
-    }
-    
+    if (!canManageOperations || nodeRestarting || nodeSaving || !confirm('Restart this node? Running pipelines will be interrupted.')) return;
+    nodeRestarting = true; ++nodeSequence;
+    document.getElementById('nodeRestart').disabled = true;
     try {
-        showAlert('warning', 'Restarting node...');
-        
-        const response = await fetch('/api/node/restart', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            }
-        });
-        
-        const result = await response.json();
-        
-        if (response.ok && result.success) {
-            showAlert('info', 'Node is restarting. This page will reload in 5 seconds...');
-            
-            // Wait for node to restart and then reload the page
-            setTimeout(() => {
-                location.reload();
-            }, 5000);
-        } else {
-            showAlert('error', `Failed to restart node: ${result.error || 'Unknown error'}`);
-        }
-    } catch (error) {
-        showAlert('error', `Error restarting node: ${error.message}`);
+        const r = await apiCall('/api/node/restart', {method:'POST'});
+        if (!r.ok || !r.data?.success) throw new Error(r.error || 'Restart was not accepted');
+        document.getElementById('pageStatus').textContent = 'Restart requested. Reloading shortly…';
+        setTimeout(() => location.reload(), 8000);
+    } catch(e) {
+        showAlert('error', esc(e.message)); nodeRestarting = false;
+        document.getElementById('nodeRestart').disabled = false;
     }
 }
 
@@ -517,7 +493,7 @@ async function exportConfig() {
         
     } catch (error) {
         console.error('Export error:', error);
-        showAlert('error', `Failed to export configuration: ${error.message}`);
+        showAlert('error', esc(`Failed to export configuration: ${error.message}`));
     }
 }
 
@@ -528,6 +504,7 @@ function refreshInfo() {
 
 // Utility functions
 function formatBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes < 0) return 'Unknown';
     if (bytes === 0) return '0 B';
     const k = 1024;
     const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -547,7 +524,7 @@ document.addEventListener('DOMContentLoaded', function() {
     loadNodeInfo();
     
     // Auto-refresh every 30 seconds
-    setInterval(loadNodeInfo, 30000);
+    setInterval(() => { if (!document.hidden) loadNodeInfo(); }, 30000);
 });
 </script>
 {% endblock %}

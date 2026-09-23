@@ -8,7 +8,7 @@
 {% endblock %}
 
 {% block content %}
-<div class="ae-workspace ae-operations">
+<div class="ae-workspace ae-operations" id="operationsWorkspace" data-can-manage="{{ 'true' if current_user.is_admin else 'false' }}">
 <div class="ae-page-header"><div><div class="ae-eyebrow">Operations / Activity</div><h1>System logs</h1><p class="ae-subtitle">Explore recent events, investigate issues and manage logging.</p></div><span class="ae-refresh-status" id="pageStatus" role="status">Loading…</span></div>
 <div class="row g-4">
     <div class="col-lg-9">
@@ -25,7 +25,7 @@
                     <button class="btn btn-sm btn-outline-success" type="button" id="logDownload" disabled onclick="downloadLogs()">
                         <i class="fas fa-download me-1"></i>Download
                     </button>
-                    <button class="btn btn-sm btn-outline-warning" type="button" id="logClear" onclick="clearLogs()">
+                    <button class="btn btn-sm btn-outline-warning" type="button" {% if not current_user.is_admin %}disabled title="Administrator access required"{% endif %} id="logClear" onclick="clearLogs()">
                         <i class="fas fa-trash me-1"></i>Clear buffer
                     </button>
                 </div>
@@ -220,6 +220,7 @@
 
 {% block scripts %}
 <script>
+const canManageOperations = document.getElementById('operationsWorkspace').dataset.canManage === 'true';
 let allLogs = [], filteredLogs = [];
 let logUpdateInterval, logsBusy = false, logsClearing = false, logsPaused = false;
 let logSequence = 0, logSettingsReady = false, logSaving = false;
@@ -253,8 +254,8 @@ async function loadLogSettings() {
         document.getElementById('logRetention').value = s.retention_days;
         document.getElementById('enableFileLogging').checked = s.file_logging_enabled;
         logSettingsReady = true;
-        document.getElementById('logFields').disabled = false;
-        document.getElementById('logSaveStatus').textContent = 'Saved settings loaded.';
+        document.getElementById('logFields').disabled = !canManageOperations;
+        document.getElementById('logSaveStatus').textContent = (canManageOperations ? 'Saved settings loaded.' : 'Read-only · Administrator access is required to change settings.');
     } catch (e) { document.getElementById('logSaveStatus').textContent = 'Settings unavailable. Use Refresh to retry.'; }
 }
 function updateLogStatistics() {
@@ -299,7 +300,7 @@ function downloadLogs() {
     setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 async function clearLogs() {
-    if (logsClearing || !confirm('Clear the in-memory log buffer? Saved log files are not deleted.')) return;
+    if (!canManageOperations || logsClearing || !confirm('Clear the in-memory log buffer? Saved log files are not deleted.')) return;
     logsClearing=true; ++logSequence;
     const button=document.getElementById('logClear'); button.disabled=true;
     try {
@@ -311,7 +312,7 @@ async function clearLogs() {
     finally { logsClearing=false; button.disabled=false; loadLogs(); }
 }
 document.getElementById('logSettingsForm').addEventListener('submit',async e=>{
-    e.preventDefault(); if (!logSettingsReady || logSaving) return;
+    e.preventDefault(); if (!canManageOperations || !logSettingsReady || logSaving) return;
     const form=document.getElementById('logSettingsForm'); if (!form.reportValidity()) return;
     const settings={log_level:document.getElementById('globalLogLevel').value,max_log_size_mb:Number(document.getElementById('maxLogSize').value),retention_days:Number(document.getElementById('logRetention').value),enable_file_logging:document.getElementById('enableFileLogging').checked};
     logSaving=true; document.getElementById('logFields').disabled=true;
@@ -321,7 +322,7 @@ document.getElementById('logSettingsForm').addEventListener('submit',async e=>{
         if (!r.ok || !r.data?.success) throw new Error(r.error || 'Settings were not saved');
         document.getElementById('logSaveStatus').textContent='Settings saved.';
     } catch(e) { document.getElementById('logSaveStatus').textContent=`Save failed: ${e.message}`; }
-    finally { logSaving=false; document.getElementById('logFields').disabled=false; }
+    finally { logSaving=false; document.getElementById('logFields').disabled=!canManageOperations; }
 });
 function startLogUpdates() { stopLogUpdates(); if (!logsPaused && !document.hidden) logUpdateInterval=setInterval(loadLogs,5000); }
 function stopLogUpdates() { if (logUpdateInterval) clearInterval(logUpdateInterval); logUpdateInterval=null; }

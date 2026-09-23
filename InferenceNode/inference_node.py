@@ -706,6 +706,8 @@ class InferenceNode:
                 component = request.args.get('component')
                 search = request.args.get('search')
                 limit = request.args.get('limit', type=int)
+                if 'limit' in request.args and (limit is None or not 1 <= limit <= 1000):
+                    return jsonify({'error': 'limit must be an integer between 1 and 1000'}), 400
                 
                 # Get filtered logs
                 logs = self.log_manager.memory_handler.get_logs(
@@ -757,7 +759,12 @@ class InferenceNode:
                 if not self.log_manager:
                     return jsonify({'error': 'Log manager not available'}), 500
                 
-                data = request.get_json()
+                data = request.get_json(silent=True)
+                from InferenceNode.log_manager import LogManager
+                try:
+                    LogManager.validate_settings(data)
+                except ValueError as exc:
+                    return jsonify({'error': str(exc)}), 400
                 success = self.log_manager.update_settings(data)
                 
                 if success:
@@ -768,7 +775,7 @@ class InferenceNode:
                         'message': 'Log settings updated successfully'
                     })
                 else:
-                    return jsonify({'error': 'Failed to update log settings'}), 500
+                    raise RuntimeError('Failed to apply log settings')
                 
             except Exception as e:
                 if previous:
@@ -810,6 +817,9 @@ class InferenceNode:
                 memory = psutil.virtual_memory()
                 disk = psutil.disk_usage('/')
                 boot_time = psutil.boot_time()
+                cpu_percent = psutil.cpu_percent(interval=0.1)
+                log_stats = (self.log_manager.memory_handler.get_log_statistics()
+                             if self.log_manager and self.log_manager.memory_handler else None)
                 
                 detailed_info = {
                     'success': True,
@@ -842,7 +852,7 @@ class InferenceNode:
                             'gpu_info': self.hardware_detector.get_gpu_details(),
                             'storage_info': self.hardware_detector.get_storage_details(),
                             'resource_usage': {
-                                'cpu': psutil.cpu_percent(interval=1),
+                                'cpu': cpu_percent,
                                 'memory': memory.percent,
                                 'disk': (disk.used / disk.total) * 100
                             }
@@ -858,9 +868,10 @@ class InferenceNode:
                         # Status
                         'status': {
                             'healthy': True,
-                            'load_average': psutil.cpu_percent(interval=0.1),
-                            'inference_count': len(getattr(self, 'active_pipelines', {})),
-                            'error_count': 0  # You can track this
+                            'cpu_percent': cpu_percent,
+                            'active_pipelines': len(getattr(self.pipeline_manager, 'active_pipelines', {})),
+                            'buffered_errors': (sum(log_stats['by_level'].get(level, 0) for level in ('ERROR', 'CRITICAL'))
+                                                if log_stats else None)
                         }
                     }
                 }
@@ -881,12 +892,20 @@ class InferenceNode:
             previous_name = self.node_name
             previous_logging = self.log_manager.get_settings() if self.log_manager else None
             try:
-                data = request.get_json()
+                data = request.get_json(silent=True)
                 if not isinstance(data, dict) or not data:
                     return jsonify({'error': 'Configuration must be a nonempty object'}), 400
-                if 'web_port' in data and data['web_port'] != self.port:
+                if set(data) - {'node_name', 'log_level', 'web_port'}:
+                    return jsonify({'error': 'Unknown configuration field'}), 400
+                if 'node_name' in data:
+                    if not isinstance(data['node_name'], str) or not 1 <= len(data['node_name'].strip()) <= 120:
+                        return jsonify({'error': 'Node name must contain 1 to 120 characters'}), 400
+                    data['node_name'] = data['node_name'].strip()
+                if 'log_level' in data and data['log_level'] not in ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'):
+                    return jsonify({'error': 'Invalid log level'}), 400
+                if 'web_port' in data and (type(data['web_port']) is not int or data['web_port'] != self.port):
                     return jsonify({'error': 'Web port is managed by deployment configuration, not this form'}), 400
-                
+
                 # Update node name if provided
                 if 'node_name' in data and data['node_name']:
                     old_name = self.node_name
@@ -903,9 +922,14 @@ class InferenceNode:
                     if not self.log_manager.update_settings({'log_level': data['log_level']}):
                         raise ValueError('Failed to update log level')
 
-                # Save settings
-                self._save_settings()
-                
+                from InferenceNode import node_settings_store as nss
+                from InferenceNode.auth.db import get_session
+                with get_session() as session:
+                    nss.set_setting(nss.KEY_NODE_IDENTITY, {'node_id': self.node_id,
+                                                          'node_name': self.node_name}, session=session)
+                    if self.log_manager and 'log_level' in data:
+                        nss.set_setting(nss.KEY_PREFERENCES, {'logging': self.log_manager.get_settings()}, session=session)
+
                 return jsonify({
                     'success': True,
                     'message': 'Configuration updated successfully',

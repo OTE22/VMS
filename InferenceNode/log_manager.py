@@ -316,18 +316,28 @@ class LogManager:
         except Exception as e:
             print(f"Failed to setup file logging: {e}")
     
+    @staticmethod
+    def validate_settings(settings):
+        if not isinstance(settings, dict) or not settings:
+            raise ValueError('Settings must be a nonempty object')
+        allowed = {'log_level', 'max_log_size_mb', 'retention_days', 'enable_file_logging'}
+        if set(settings) - allowed:
+            raise ValueError('Unknown logging setting')
+        if 'log_level' in settings and settings['log_level'] not in ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'):
+            raise ValueError('Invalid log level')
+        for key, maximum in (('max_log_size_mb', 100), ('retention_days', 30)):
+            if key in settings and (type(settings[key]) is not int or not 1 <= settings[key] <= maximum):
+                raise ValueError(f'{key} must be an integer between 1 and {maximum}')
+        if 'enable_file_logging' in settings and type(settings['enable_file_logging']) is not bool:
+            raise ValueError('enable_file_logging must be a boolean')
+
     def update_settings(self, settings: Dict[str, Any]):
         """Update logging settings"""
         try:
-            if not isinstance(settings, dict):
-                return False
-            if 'log_level' in settings and settings['log_level'] not in ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'):
-                return False
-            for key in ('max_log_size_mb', 'retention_days'):
-                if key in settings and (type(settings[key]) is not int or settings[key] < 1):
-                    return False
-            if 'enable_file_logging' in settings and type(settings['enable_file_logging']) is not bool:
-                return False
+            self.validate_settings(settings)
+            # Apply retention before creating a handler (its constructor prunes).
+            if 'retention_days' in settings:
+                self.retention_days = settings['retention_days']
             # Apply rotation settings before a new handler is created.
             if 'max_log_size_mb' in settings:
                 self.max_log_size_mb = settings['max_log_size_mb']
@@ -343,6 +353,8 @@ class LogManager:
                 root_logger = logging.getLogger()
                 root_logger.setLevel(numeric_level)
                 
+                if self.stream_handler:
+                    self.stream_handler.setLevel(numeric_level)
                 # Update file handler level if exists
                 if self.file_handler:
                     self.file_handler.setLevel(numeric_level)
@@ -353,6 +365,8 @@ class LogManager:
                 
                 if self.file_logging_enabled and not self.file_handler:
                     self._setup_file_logging()
+                    if self.file_handler is None:
+                        raise RuntimeError('File logging could not be enabled')
                 elif not self.file_logging_enabled and self.file_handler:
                     # Remove file handler
                     root_logger = logging.getLogger()
