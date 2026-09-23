@@ -23,3 +23,15 @@
 .ae-operations .progress { height: 8px; background: #121a27; margin: 8px 0; }
 .ae-operations fieldset:disabled { opacity: 1; }
 @media (max-width: 576px) { .ae-operations .card-body { padding: 14px; } .ae-operations .table td { padding: 10px 6px; } }
+.ae-operations .form-label { text-transform: none; letter-spacing: 0; }
+.ae-operations .card-header .card-title::after { display: none; }
+/* Bootstrap's disabled controls otherwise use a light background. */
+.ae-operations :is(.form-control, .form-select),
+.ae-operations :is(.form-control, .form-select):disabled,
+.ae-operations .form-control[readonly] { background-color: #1b2433; color: #f1f5f9; border-color: #627089; opacity: 1; color-scheme: dark; }
+.ae-operations .card-header .card-title { color: #f1f5f9 !important; text-transform: none; letter-spacing: 0; }
+.ae-operations .btn { text-transform: none; letter-spacing: 0; font-weight: 600; }
+.ae-operations .btn-outline-secondary { color: #e2e8f0; border-color: #627089; }
+.ae-operations .btn-outline-success { color: #9ce9bd; border-color: #68b78d; }
+.ae-operations :is(.btn-outline-secondary, .btn-outline-success):hover { background: #303c50; }
+.ae-operations .list-group-item .badge { color: #f1f5f9 !important; background: #334155 !important; border: 1px solid #627089; box-shadow: none; }

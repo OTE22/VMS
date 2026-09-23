@@ -58,3 +58,9 @@ def test_retention_applied_before_new_handler():
     manager._setup_file_logging=setup
     assert manager.update_settings({'enable_file_logging':True,'retention_days':30})
     assert seen==[30]
+
+def test_log_timestamp_includes_timezone():
+    from InferenceNode.log_manager import MemoryLogHandler
+    handler=MemoryLogHandler()
+    handler.emit(logging.LogRecord('test',logging.INFO,'',1,'message',(),None))
+    assert handler.get_logs()[0]['timestamp'].endswith('+00:00')

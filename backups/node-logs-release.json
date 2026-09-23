@@ -1,0 +1,81 @@
+{
+  "releases": [
+    {
+      "container": "VMS",
+      "service": "vms",
+      "compose": [
+        "docker",
+        "compose",
+        "--project-directory",
+        "/home/itdirect-ai/Desktop/VMS",
+        "--env-file",
+        "/home/itdirect-ai/Desktop/VMS/.env",
+        "-p",
+        "armyeye",
+        "-f",
+        "/home/itdirect-ai/Desktop/VMS/compose.yaml",
+        "-f",
+        "/home/itdirect-ai/Desktop/VMS/compose.prod.yaml",
+        "-f",
+        "/home/itdirect-ai/Desktop/VMS/compose.gpu.yaml"
+      ],
+      "release_image": "armyeye-vms:node-logs-20260923t094114z",
+      "image_id": "sha256:4dc99f8de77b70c6693785c1dfa9c0f0b540e7bd8f797b939321d43a2944ddf3",
+      "previous_image_id": "sha256:ae4606ae63edbaaa937895922d904f2d6bb0b191b8840ff393004af66ffdd971",
+      "rollback_image": "armyeye-vms:before-node-logs-20260923t094114z",
+      "configured_image": "armyeye-vms",
+      "hashes": {
+        "/app/InferenceNode/templates/node_info.html": "ace6a2c0d171059b80f2bf677acc13065cb329cf7e49624b49781246f6a2626a",
+        "/app/InferenceNode/templates/logs.html": "8991990de61550e2af8a1c002644e89a58e0a116712ba92c3bd579c57bf7605c",
+        "/app/InferenceNode/static/css/operations-workspace.css": "cd791f98893011378f092fc48414c4ba268836dc6fa2f44d8e5ebd937f69d063",
+        "/app/InferenceNode/log_manager.py": "38e088f34304270cbba6859461e22d978fac11f931cb4fb121fab656c19fcaba",
+        "/app/InferenceNode/inference_node.py": "ac71484030318db1f8bb16d02f6641c71c699ae74aeab6597c58fe2721d359b1"
+      },
+      "mounts": [
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/secrets/armyeye_config_key",
+          "/run/secrets/armyeye_config_key",
+          false
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/secrets/face-internal-ca.crt",
+          "/run/secrets/face_internal_ca",
+          false
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/InferenceNode/model_repository",
+          "/app/InferenceNode/model_repository",
+          true
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/InferenceNode/media",
+          "/app/InferenceNode/media",
+          true
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/InferenceNode/pipelines",
+          "/app/InferenceNode/pipelines",
+          true
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/InferenceNode/logs",
+          "/app/InferenceNode/logs",
+          true
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/InferenceNode/data",
+          "/app/InferenceNode/data",
+          true
+        ]
+      ],
+      "state": "deployed_verified"
+    }
+  ]
+}

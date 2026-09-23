@@ -3,7 +3,7 @@ from logging.handlers import RotatingFileHandler
 import sys
 import threading
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from collections import deque
 from typing import List, Dict, Any, Optional
 
@@ -48,7 +48,7 @@ class MemoryLogHandler(logging.Handler):
                 
                 # Create log entry
                 log_entry = {
-                    'timestamp': datetime.fromtimestamp(record.created).isoformat(),
+                    'timestamp': datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
                     'level': record.levelname,
                     'component': component,
                     'message': record.getMessage(),

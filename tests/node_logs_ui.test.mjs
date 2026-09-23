@@ -19,3 +19,13 @@ test('logs include critical errors and system entries in counts',()=>{const {c,e
 test('log download contains raw text and exception details, display escapes it',()=>{const {c,el,blobs}=page('logs');vm.runInContext("allLogs=[{timestamp:'2026-09-23',level:'ERROR',component:'web',message:'a < b & c',exception:'trace <x>'}]",c);c.filterLogs();assert.match(el('logContainer').innerHTML,/a &lt; b &amp; c/);c.downloadLogs();assert.match(blobs[0],/a < b & c/);assert.match(blobs[0],/trace <x>/);});
 test('log refresh cannot restore entries after clear begins',async()=>{const {c,el}=page('logs');const d=deferred();c.apiCall=url=>url==='/api/logs'?d.promise:Promise.resolve({ok:true,data:{success:true}});const loading=c.loadLogs();await c.clearLogs();d.resolve({ok:true,data:{success:true,data:{logs:[{level:'ERROR',component:'system',message:'old'}]}}});await loading;assert.doesNotMatch(el('logContainer').innerHTML,/old/);});
 test('failed clear never claims success',async()=>{const {c,alerts}=page('logs');c.apiCall=async()=>({ok:false,error:'denied'});await c.clearLogs();assert.equal(alerts[0][0],'error');});
+test('both configuration forms send JSON with the required content type',async()=>{
+ for(const name of ['node_info','logs']) {
+  const {c,el,requests}=page(name);
+  vm.runInContext(name==='logs'?'logSettingsReady=true':'nodeReady=true',c);
+  el('nodeName').value='Node';el('logLevel').value='INFO';el('globalLogLevel').value='INFO';el('maxLogSize').value='10';el('logRetention').value='7';
+  await el(name==='logs'?'logSettingsForm':'configForm').submit({preventDefault(){}});
+  assert.equal(requests[0][1].headers['Content-Type'],'application/json');
+  assert.doesNotThrow(()=>JSON.parse(requests[0][1].body));
+ }
+});
