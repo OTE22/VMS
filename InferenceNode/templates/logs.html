@@ -2,8 +2,15 @@
 
 {% block title %}System Logs| مديرية التأليل{% endblock %}
 
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/admin-workspace.css', v='readability-4') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/operations-workspace.css', v='operations-1') }}">
+{% endblock %}
+
 {% block content %}
-<div class="row">
+<div class="ae-workspace ae-operations">
+<div class="ae-page-header"><div><div class="ae-eyebrow">Operations / Activity</div><h1>System logs</h1><p class="ae-subtitle">Explore recent events, investigate issues and manage logging.</p></div><span class="ae-refresh-status" id="pageStatus" role="status">Loading…</span></div>
+<div class="row g-4">
     <div class="col-lg-9">
         <!-- Log Viewer -->
         <div class="card">
@@ -11,15 +18,15 @@
                 <h5 class="card-title mb-0">
                     <i class="fas fa-file-alt me-2"></i>System Logs
                 </h5>
-                <div class="d-flex gap-2">
-                    <button class="btn btn-sm btn-outline-primary" onclick="refreshLogs()">
+                <div class="d-flex flex-wrap gap-2"><button type="button" class="btn btn-sm btn-outline-secondary" id="logPause" onclick="toggleLogUpdates()" aria-pressed="false">Pause updates</button>
+                    <button class="btn btn-sm btn-outline-primary" type="button" onclick="refreshLogs()">
                         <i class="fas fa-sync me-1"></i>Refresh
                     </button>
-                    <button class="btn btn-sm btn-outline-success" onclick="downloadLogs()">
+                    <button class="btn btn-sm btn-outline-success" type="button" id="logDownload" disabled onclick="downloadLogs()">
                         <i class="fas fa-download me-1"></i>Download
                     </button>
-                    <button class="btn btn-sm btn-outline-warning" onclick="clearLogs()">
-                        <i class="fas fa-trash me-1"></i>Clear
+                    <button class="btn btn-sm btn-outline-warning" type="button" id="logClear" onclick="clearLogs()">
+                        <i class="fas fa-trash me-1"></i>Clear buffer
                     </button>
                 </div>
             </div>
@@ -35,7 +42,7 @@
                                 <option value="INFO">INFO</option>
                                 <option value="WARNING">WARNING</option>
                                 <option value="ERROR">ERROR</option>
-                                <option value="CRITICAL">CRITICAL</option>
+                            <option value="CRITICAL">CRITICAL</option>
                             </select>
                         </div>
                         <div class="col-md-3">
@@ -53,13 +60,13 @@
                         <div class="col-md-4">
                             <label for="logSearch" class="form-label">Search</label>
                             <input type="text" class="form-control form-control-sm" id="logSearch" 
-                                   placeholder="Search logs..." onkeyup="filterLogs()">
+                                   placeholder="Search logs..." oninput="filterLogs()">
                         </div>
                     </div>
                 </div>
 
                 <!-- Log Content -->
-                <div id="logContainer" class="log-container log-display">
+                <div id="logSummary" class="ae-log-summary" role="status">Loading recent entries…</div><div id="logContainer" tabindex="0" aria-label="Recent system log entries" class="log-container log-display">
                     <div class="p-3 text-light">Loading logs...</div>
                 </div>
             </div>
@@ -97,7 +104,7 @@
                     <div class="col-6">
                         <div class="border rounded p-2">
                             <div class="h6 text-danger mb-1" id="errorCount">0</div>
-                            <small class="text-muted">ERROR</small>
+                            <small class="text-muted">ERROR + CRITICAL</small>
                         </div>
                     </div>
                 </div>
@@ -106,7 +113,7 @@
                 
                 <div class="text-center">
                     <div class="h6 mb-1" id="totalLogs">0</div>
-                    <small class="text-muted">Total Log Entries</small>
+                    <small class="text-muted">Entries in memory</small>
                 </div>
             </div>
         </div>
@@ -155,10 +162,12 @@
                         </div>
                         <span class="badge bg-secondary rounded-pill" id="webLogCount">0</span>
                     </div>
+<div class="list-group-item d-flex justify-content-between p-2"><span>System</span><span class="badge bg-secondary rounded-pill" id="systemLogCount">0</span></div>
                 </div>
             </div>
         </div>
 
+        <p class="ae-section-description mb-3">This viewer shows the latest 1,000 in-memory entries. File rotation settings apply to saved log files.</p>
         <!-- Log Settings -->
         <div class="card mb-4">
             <div class="card-header">
@@ -167,7 +176,7 @@
                 </h6>
             </div>
             <div class="card-body">
-                <form id="logSettingsForm">
+                <form id="logSettingsForm"><fieldset id="logFields" disabled>
                     <div class="mb-3">
                         <label for="globalLogLevel" class="form-label">Global Log Level</label>
                         <select class="form-select form-select-sm" id="globalLogLevel">
@@ -175,16 +184,17 @@
                             <option value="INFO" selected>INFO</option>
                             <option value="WARNING">WARNING</option>
                             <option value="ERROR">ERROR</option>
+                            <option value="CRITICAL">CRITICAL</option>
                         </select>
                     </div>
                     
                     <div class="mb-3">
-                        <label for="maxLogSize" class="form-label">Max Log Size (MB)</label>
+                        <label for="maxLogSize" class="form-label">File rotation size (MB)</label>
                         <input type="number" class="form-control form-control-sm" id="maxLogSize" value="10" min="1" max="100">
                     </div>
                     
                     <div class="mb-3">
-                        <label for="logRetention" class="form-label">Retention (days)</label>
+                        <label for="logRetention" class="form-label">Rotated file retention (days)</label>
                         <input type="number" class="form-control form-control-sm" id="logRetention" value="7" min="1" max="30">
                     </div>
                     
@@ -197,274 +207,133 @@
                         </div>
                     </div>
                     
-                    <button type="submit" class="btn btn-primary btn-sm w-100">
+                    <button type="submit" id="logSave" class="btn btn-primary btn-sm w-100">
                         <i class="fas fa-save me-1"></i>Save Settings
                     </button>
-                </form>
+                </fieldset><p id="logSaveStatus" class="ae-form-status" role="status">Loading saved settings…</p></form>
             </div>
         </div>
     </div>
+</div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-let allLogs = [];
-let filteredLogs = [];
-let logUpdateInterval;
+let allLogs = [], filteredLogs = [];
+let logUpdateInterval, logsBusy = false, logsClearing = false, logsPaused = false;
+let logSequence = 0, logSettingsReady = false, logSaving = false;
+const logLevelClasses = {DEBUG:'text-muted', INFO:'text-info', WARNING:'text-warning', ERROR:'text-danger', CRITICAL:'text-danger fw-bold'};
 
-// Log entry class for styling
-const logLevelClasses = {
-    'DEBUG': 'text-muted',
-    'INFO': 'text-info',
-    'WARNING': 'text-warning',
-    'ERROR': 'text-danger',
-    'CRITICAL': 'text-danger fw-bold'
-};
-
-// Load logs from API
 async function loadLogs() {
+    if (logsBusy || logsClearing) return;
+    logsBusy = true;
+    const sequence = ++logSequence;
     try {
-        const response = await fetch('/api/logs');
-        const data = await response.json();
-        
-        if (response.ok && data.success) {
-            allLogs = data.data.logs || [];
-            updateLogStatistics();
-            filterLogs();
-        } else {
-            throw new Error(data.error || `Load failed (HTTP ${response.status})`);
-        }
-    } catch (error) {
-        console.error('Error loading logs:', error);
-        allLogs = [];
-        filteredLogs = [];
+        const r = await apiCall('/api/logs');
+        if (sequence !== logSequence) return;
+        if (!r.ok || !r.data?.success || !Array.isArray(r.data.data?.logs)) throw new Error(r.error || 'Could not load logs');
+        allLogs = r.data.data.logs;
         updateLogStatistics();
-        document.getElementById('logContainer').innerHTML =
-            `<div class="p-3 text-warning">Could not load logs: ${esc(error.message)}. Retrying on the next refresh.</div>`;
-    }
+        filterLogs();
+        document.getElementById('pageStatus').textContent = `${logsPaused ? 'Paused' : 'Updates every 5 seconds'} · Updated ${new Date().toLocaleTimeString()}`;
+    } catch (error) {
+        if (sequence !== logSequence) return;
+        document.getElementById('pageStatus').textContent = 'Refresh failed · Showing last loaded entries';
+        if (!allLogs.length) document.getElementById('logContainer').innerHTML = `<div class="p-4">${esc(error.message)}. Use Refresh to try again.</div>`;
+    } finally { logsBusy = false; }
 }
-
 async function loadLogSettings() {
-    const result = await apiCall('/api/logs/settings');
-    if (!result.ok || !result.data?.success) {
-        showAlert('error', result.error || 'Could not load log settings');
-        return;
-    }
-    const settings = result.data.settings;
-    document.getElementById('globalLogLevel').value = settings.log_level;
-    document.getElementById('maxLogSize').value = settings.max_log_size_mb;
-    document.getElementById('logRetention').value = settings.retention_days;
-    document.getElementById('enableFileLogging').checked = settings.file_logging_enabled;
+    try {
+        const r = await apiCall('/api/logs/settings');
+        if (!r.ok || !r.data?.success) throw new Error(r.error || 'Could not load settings');
+        const s = r.data.settings;
+        document.getElementById('globalLogLevel').value = s.log_level;
+        document.getElementById('maxLogSize').value = s.max_log_size_mb;
+        document.getElementById('logRetention').value = s.retention_days;
+        document.getElementById('enableFileLogging').checked = s.file_logging_enabled;
+        logSettingsReady = true;
+        document.getElementById('logFields').disabled = false;
+        document.getElementById('logSaveStatus').textContent = 'Saved settings loaded.';
+    } catch (e) { document.getElementById('logSaveStatus').textContent = 'Settings unavailable. Use Refresh to retry.'; }
 }
-
-// Update log statistics
 function updateLogStatistics() {
-    const stats = {
-        debug: 0,
-        info: 0,
-        warning: 0,
-        error: 0,
-        total: allLogs.length
-    };
-    
-    const componentStats = {
-        inference: 0,
-        publisher: 0,
-        telemetry: 0,
-        discovery: 0,
-        web: 0,
-        system: 0
-    };
-    
-    allLogs.forEach(log => {
-        const level = log.level.toLowerCase();
-        if (stats[level] !== undefined) {
-            stats[level]++;
-        }
-        
-        if (componentStats[log.component] !== undefined) {
-            componentStats[log.component]++;
-        }
-    });
-    
-    // Update statistics display
-    document.getElementById('debugCount').textContent = stats.debug;
-    document.getElementById('infoCount').textContent = stats.info;
-    document.getElementById('warningCount').textContent = stats.warning;
-    document.getElementById('errorCount').textContent = stats.error;
-    document.getElementById('totalLogs').textContent = stats.total;
-    
-    // Update component statistics
-    document.getElementById('inferenceLogCount').textContent = componentStats.inference;
-    document.getElementById('publisherLogCount').textContent = componentStats.publisher;
-    document.getElementById('telemetryLogCount').textContent = componentStats.telemetry;
-    document.getElementById('discoveryLogCount').textContent = componentStats.discovery;
-    document.getElementById('webLogCount').textContent = componentStats.web;
+    const levels = {DEBUG:0, INFO:0, WARNING:0, ERROR:0};
+    const components = {inference:0,publisher:0,telemetry:0,discovery:0,web:0,system:0};
+    for (const log of allLogs) {
+        const level = log.level === 'CRITICAL' ? 'ERROR' : log.level;
+        if (level in levels) levels[level]++;
+        if (log.component in components) components[log.component]++;
+    }
+    for (const [level,count] of Object.entries(levels)) document.getElementById(level.toLowerCase()+'Count').textContent = count;
+    for (const [component,count] of Object.entries(components)) document.getElementById(component+'LogCount').textContent = count;
+    document.getElementById('totalLogs').textContent = allLogs.length;
 }
-
-// Filter logs based on current filters
 function filterLogs() {
-    const levelFilter = document.getElementById('logLevel').value;
-    const componentFilter = document.getElementById('logComponent').value;
-    const searchFilter = document.getElementById('logSearch').value.toLowerCase();
-    
-    filteredLogs = allLogs.filter(log => {
-        if (levelFilter && log.level !== levelFilter) return false;
-        if (componentFilter && log.component !== componentFilter) return false;
-        if (searchFilter && !log.message.toLowerCase().includes(searchFilter)) return false;
-        return true;
-    });
-    
+    const level = document.getElementById('logLevel').value;
+    const component = document.getElementById('logComponent').value;
+    const search = document.getElementById('logSearch').value.trim().toLowerCase();
+    filteredLogs = allLogs.filter(log => (!level || log.level === level) && (!component || log.component === component) &&
+        (!search || [log.message,log.logger,log.exception,JSON.stringify(log.details || '')].join(' ').toLowerCase().includes(search)));
     displayLogs();
 }
-
-// Display logs in the container
 function displayLogs() {
     const container = document.getElementById('logContainer');
-    
-    if (filteredLogs.length === 0) {
-        container.innerHTML = '<div class="p-3 text-light">No logs match the current filters</div>';
-        return;
-    }
-    
-    const html = filteredLogs.map(log => {
+    const scroll = container.scrollTop;
+    document.getElementById('logSummary').textContent = `${filteredLogs.length} of ${allLogs.length} buffered entries · Newest first`;
+    document.getElementById('logDownload').disabled = !filteredLogs.length;
+    if (!filteredLogs.length) { container.innerHTML = `<div class="p-4">${allLogs.length ? 'No matching entries. Try another search or filter.' : 'No buffered logs yet. New entries will appear here.'}</div>`; return; }
+    container.innerHTML = filteredLogs.map(log => {
         const timestamp = new Date(log.timestamp).toLocaleString();
-        const levelClass = logLevelClasses[log.level] || 'text-muted';
-        const detailsHtml = log.details ? 
-            `<div class="ms-4 mt-1"><small class="text-muted">${esc(JSON.stringify(log.details))}</small></div>` : '';
-        
-        return `
-            <div class="log-entry p-2 border-bottom" data-level="${esc(log.level)}" data-component="${esc(log.component)}">
-                <div class="d-flex">
-                    <span class="text-muted me-2 log-timestamp">${timestamp}</span>
-                    <span class="badge badge-sm me-2 log-level-badge ${levelClass}">${esc(log.level)}</span>
-                    <span class="badge bg-secondary me-2 log-component-badge">${esc(log.component)}</span>
-                    <span class="flex-grow-1">${esc(log.message)}</span>
-                </div>
-                ${detailsHtml}
-            </div>
-        `;
+        const details = [log.exception, log.details ? JSON.stringify(log.details,null,2) : ''].filter(Boolean).join('\n');
+        return `<article class="log-entry border-bottom"><div class="ae-log-meta"><time>${esc(timestamp)}</time><span class="badge ${logLevelClasses[log.level] || 'text-muted'}">${esc(log.level)}</span><span>${esc(log.component)}</span></div><div class="ae-log-message">${esc(log.message)}</div>${details ? `<details><summary>View details</summary><pre>${esc(details)}</pre></details>` : ''}</article>`;
     }).join('');
-    
-    container.innerHTML = html;
+    container.scrollTop = scroll;
 }
-
-// Action functions
-function refreshLogs() {
-    showAlert('info', 'Refreshing logs...');
-    loadLogs();
-}
-
+function refreshLogs() { loadLogs(); if (!logSettingsReady) loadLogSettings(); }
 function downloadLogs() {
-    const logData = filteredLogs.map(log => 
-        `${log.timestamp} [${esc(log.level)}] ${esc(log.component)}: ${esc(log.message)}`
-    ).join('\n');
-    
-    const blob = new Blob([logData], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `infernode-logs-${new Date().toISOString().split('T')[0]}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
-    
-    showAlert('success', 'Logs downloaded successfully');
+    if (!filteredLogs.length) return;
+    const text = filteredLogs.map(log => `${log.timestamp} [${log.level}] ${log.component}: ${log.message}${log.exception ? '\n'+log.exception : ''}${log.details ? '\n'+JSON.stringify(log.details) : ''}`).join('\n');
+    const url = URL.createObjectURL(new Blob([text],{type:'text/plain;charset=utf-8'}));
+    const a = document.createElement('a'); a.href=url; a.download=`infernode-logs-${new Date().toISOString().slice(0,10)}.txt`; a.click();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
-
-function clearLogs() {
-    if (confirm('Are you sure you want to clear all logs? This action cannot be undone.')) {
-        fetch('/api/logs/clear', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            }
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                allLogs = [];
-                filteredLogs = [];
-                updateLogStatistics();
-                displayLogs();
-                showAlert('success', 'All logs have been cleared');
-            } else {
-                showAlert('error', `Failed to clear logs: ${data.error}`);
-            }
-        })
-        .catch(error => {
-            showAlert('error', `Failed to clear logs: ${error.message}`);
-        });
-    }
-}
-
-// Log settings form handler
-document.getElementById('logSettingsForm').addEventListener('submit', async function(e) {
-    e.preventDefault();
-    
-    const settings = {
-        log_level: document.getElementById('globalLogLevel').value,
-        max_log_size_mb: parseInt(document.getElementById('maxLogSize').value),
-        retention_days: parseInt(document.getElementById('logRetention').value),
-        enable_file_logging: document.getElementById('enableFileLogging').checked
-    };
-    
+async function clearLogs() {
+    if (logsClearing || !confirm('Clear the in-memory log buffer? Saved log files are not deleted.')) return;
+    logsClearing=true; ++logSequence;
+    const button=document.getElementById('logClear'); button.disabled=true;
     try {
-        const response = await fetch('/api/logs/settings', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(settings)
-        });
-        
-        const result = await response.json();
-        
-        if (response.ok) {
-            showAlert('success', 'Log settings updated successfully!');
-        } else {
-            showAlert('error', `Failed to update settings: ${result.error}`);
-        }
-    } catch (error) {
-        showAlert('error', `Failed to update settings: ${error.message}`);
-    }
-});
-
-// Auto-update logs
-function startLogUpdates() {
-    logUpdateInterval = setInterval(() => {
-        if (!document.hidden) { // Only update when page is visible
-            loadLogs();
-        }
-    }, 5000); // Update every 5 seconds
+        const r=await apiCall('/api/logs/clear',{method:'POST'});
+        if (!r.ok || !r.data?.success) throw new Error(r.error || 'Clear failed');
+        allLogs=[]; filteredLogs=[]; updateLogStatistics(); displayLogs();
+        showAlert('success','In-memory log buffer cleared. Saved files are unchanged.');
+    } catch(e) { showAlert('error',esc(e.message)); }
+    finally { logsClearing=false; button.disabled=false; loadLogs(); }
 }
-
-function stopLogUpdates() {
-    if (logUpdateInterval) {
-        clearInterval(logUpdateInterval);
-        logUpdateInterval = null;
-    }
+document.getElementById('logSettingsForm').addEventListener('submit',async e=>{
+    e.preventDefault(); if (!logSettingsReady || logSaving) return;
+    const form=document.getElementById('logSettingsForm'); if (!form.reportValidity()) return;
+    const settings={log_level:document.getElementById('globalLogLevel').value,max_log_size_mb:Number(document.getElementById('maxLogSize').value),retention_days:Number(document.getElementById('logRetention').value),enable_file_logging:document.getElementById('enableFileLogging').checked};
+    logSaving=true; document.getElementById('logFields').disabled=true;
+    document.getElementById('logSaveStatus').textContent='Saving…';
+    try {
+        const r=await apiCall('/api/logs/settings',{method:'POST',body:JSON.stringify(settings)});
+        if (!r.ok || !r.data?.success) throw new Error(r.error || 'Settings were not saved');
+        document.getElementById('logSaveStatus').textContent='Settings saved.';
+    } catch(e) { document.getElementById('logSaveStatus').textContent=`Save failed: ${e.message}`; }
+    finally { logSaving=false; document.getElementById('logFields').disabled=false; }
+});
+function startLogUpdates() { stopLogUpdates(); if (!logsPaused && !document.hidden) logUpdateInterval=setInterval(loadLogs,5000); }
+function stopLogUpdates() { if (logUpdateInterval) clearInterval(logUpdateInterval); logUpdateInterval=null; }
+function toggleLogUpdates() {
+    logsPaused=!logsPaused;
+    const b=document.getElementById('logPause'); b.textContent=logsPaused?'Resume updates':'Pause updates'; b.setAttribute('aria-pressed',String(logsPaused));
+    document.getElementById('pageStatus').textContent=logsPaused?'Updates paused · Use Refresh for a snapshot':'Updates resumed';
+    startLogUpdates(); if (!logsPaused) loadLogs();
 }
-
-// Initialize page
-document.addEventListener('DOMContentLoaded', function() {
-    loadLogs();
-    loadLogSettings();
-    startLogUpdates();
-});
-
-// Cleanup when page is hidden/unloaded
-document.addEventListener('visibilitychange', function() {
-    if (document.hidden) {
-        stopLogUpdates();
-    } else {
-        startLogUpdates();
-    }
-});
-
-window.addEventListener('beforeunload', function() {
-    stopLogUpdates();
-});
+document.addEventListener('DOMContentLoaded',()=>{loadLogs();loadLogSettings();startLogUpdates();});
+document.addEventListener('visibilitychange',()=>{startLogUpdates();if (!document.hidden && !logsPaused) loadLogs();});
+window.addEventListener('beforeunload',stopLogUpdates);
 </script>
 
 {% endblock %}

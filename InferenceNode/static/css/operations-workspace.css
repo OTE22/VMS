@@ -1,0 +1,25 @@
+/* High-contrast operational pages: use real dark surfaces, not faded text. */
+.ae-operations .card-title, .ae-operations h6 { font-family: var(--font-sans); color: #f1f5f9; text-transform: none; letter-spacing: 0; font-size: 1.125rem; text-shadow: none; }
+.ae-operations .card-header { flex-wrap: wrap; gap: 12px; }
+.ae-operations .table td { padding: 11px 12px; overflow-wrap: anywhere; }
+.ae-operations .table td:first-child { width: 42%; }
+.ae-operations .table td strong { font-weight: 500; color: #dce4ee; }
+.ae-operations .card-body { padding: 20px; }
+.ae-operations .list-group-item { background: #242a38; color: #f1f5f9; border-color: #414b5d; }
+.ae-operations .form-text, .ae-form-status, .ae-refresh-status, .ae-log-summary { font-size: .875rem; color: #dce4ee; line-height: 1.6; }
+.ae-form-status { margin: 12px 0 0; }
+.ae-refresh-status { max-width: 32rem; }
+.ae-log-summary { padding: 12px 20px; background: #202736; border-bottom: 1px solid #414b5d; }
+.ae-operations .log-display { height: clamp(360px, 65vh, 800px); overflow: auto; background: #161d29; color: #f1f5f9; font-family: var(--font-sans); font-size: 1rem; }
+.ae-operations .log-entry { padding: 16px 20px !important; border-color: #364357 !important; line-height: 1.65; }
+.ae-operations .log-entry:hover { background: #222e40; }
+.ae-log-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-bottom: 8px; font-size: .875rem; color: #dce4ee; }
+.ae-operations .log-timestamp, .ae-operations .log-level-badge, .ae-operations .log-component-badge { min-width: 0; width: auto; font-family: inherit; font-size: .875rem; }
+.ae-log-message { white-space: pre-wrap; overflow-wrap: anywhere; color: #f1f5f9; }
+.ae-operations .log-entry pre { white-space: pre-wrap; overflow-wrap: anywhere; color: #dce4ee; background: #111824; padding: 12px; font-size: .875rem; }
+.ae-operations .log-entry summary { color: #b9dbff; cursor: pointer; }
+.ae-operations .log-entry details { margin-top: 8px; }
+.ae-operations .badge { line-height: 1.4; }
+.ae-operations .progress { height: 8px; background: #121a27; margin: 8px 0; }
+.ae-operations fieldset:disabled { opacity: 1; }
+@media (max-width: 576px) { .ae-operations .card-body { padding: 14px; } .ae-operations .table td { padding: 10px 6px; } }

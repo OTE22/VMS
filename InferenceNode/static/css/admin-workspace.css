@@ -93,3 +93,16 @@
 .ae-workspace .ae-stat-note, .ae-workspace .ae-media-details,
 .ae-workspace .ae-media-footer, .ae-workspace .ae-hint { font-weight: 500; }
 .ae-workspace .form-label, .ae-workspace .ae-media-status { font-weight: 600; }
+
+/* Bootstrap paints each cell, covering the dark background on its parent row. */
+.ae-workspace .table {
+    --bs-table-color: var(--text-primary);
+    --bs-table-bg: #242a38;
+    --bs-table-border-color: #414b5d;
+    --bs-table-striped-color: var(--text-primary);
+    --bs-table-striped-bg: #293243;
+    --bs-table-hover-color: var(--text-primary);
+    --bs-table-hover-bg: #303c50;
+    --bs-table-active-color: var(--text-primary);
+    --bs-table-active-bg: #35445b;
+}
