@@ -23,7 +23,7 @@
                         </div>
                         <div class="col-md-6">
                             <label for="modelFile" class="form-label">Model File</label>
-                            <input type="file" class="form-control" id="modelFile" accept=".pt,.pth,.zip,.onnx" required>
+                            <input type="file" class="form-control" id="modelFile" accept=".pt,.zip,.onnx" required>
                             <div class="form-text" id="supportedFormatsText">Supported formats: .pt (Ultralytics), .zip (Geti), .onnx (ONNX Runtime)</div>
                         </div>
                         
@@ -354,6 +354,26 @@
 
 {% block scripts %}
 <script>
+let modelOperationPending = false;
+let modelOperationGeneration = 0;
+let modelsRefreshSequence = 0;
+let modelFormDisabled = [];
+const pendingModelDeletes = new Set();
+function beginModelOperation() {
+    if (modelOperationPending) return false;
+    modelOperationPending = true;
+    modelOperationGeneration++;
+    modelsRefreshSequence++;
+    modelFormDisabled = Array.from(document.querySelectorAll('#uploadForm input, #uploadForm select, #uploadForm textarea, #uploadForm button')).map(control => [control, control.disabled]);
+    modelFormDisabled.forEach(([control]) => { control.disabled = true; });
+    return true;
+}
+function endModelOperation() {
+    modelOperationPending = false;
+    modelFormDisabled.forEach(([control, disabled]) => { control.disabled = disabled; });
+    modelFormDisabled = [];
+}
+function showModelAlert(type, message) { showAlert(type, esc(message)); }
 let currentView = 'list'; // 'list' or 'grid'
 let availableEngineTypes = []; // Store available engine types
 
@@ -392,7 +412,7 @@ function updateInferenceEngineDropdown(engines) {
     engines.forEach(engine => {
         const displayName = engine.display_name || engine.name || engine.type;
         const engineValue = engine.type || engine.name;
-        optionsHtml += `<option value="${engineValue}">${displayName}</option>`;
+        optionsHtml += `<option value="${esc(engineValue)}">${esc(displayName)}</option>`;
     });
     
     dropdown.innerHTML = optionsHtml;
@@ -404,7 +424,7 @@ function showEngineLoadError() {
     const dropdown = document.getElementById('inferenceEngine');
     dropdown.innerHTML = '<option value="">Error loading engines</option>';
     dropdown.disabled = true;
-    showAlert('error', 'Failed to load inference engines. Please refresh the page.');
+    showModelAlert('error', 'Failed to load inference engines. Please refresh the page.');
 }
 
 // Handle inference engine selection
@@ -418,8 +438,8 @@ document.getElementById('inferenceEngine').addEventListener('change', function()
     if (this.value === 'ultralytics') {
         ultralyticsSection.style.display = 'block';
         modelFileInput.required = false;
-        supportedFormatsText.textContent = 'Supported formats: .pt, .pth (PyTorch models)';
-        modelFileInput.accept = '.pt,.pth';
+        supportedFormatsText.textContent = 'Supported formats: .pt (Ultralytics checkpoints)';
+        modelFileInput.accept = '.pt';
     } else if (this.value === 'geti') {
         ultralyticsSection.style.display = 'none';
         modelFileInput.required = true;
@@ -442,7 +462,7 @@ document.getElementById('inferenceEngine').addEventListener('change', function()
         ultralyticsSection.style.display = 'none';
         modelFileInput.required = true;
         supportedFormatsText.textContent = 'Supported formats: .pt (Ultralytics), .zip (Geti), .onnx (ONNX Runtime)';
-        modelFileInput.accept = '.pt,.pth,.zip,.onnx';
+        modelFileInput.accept = '.pt,.zip,.onnx';
         document.getElementById('ultralyticsModel').value = '';
     }
 });
@@ -453,14 +473,19 @@ document.getElementById('inferenceEngine').addEventListener('change', function()
 // Upload form handler
 document.getElementById('uploadForm').addEventListener('submit', async function(e) {
     e.preventDefault();
+    if (modelOperationPending) return;
     
     const inferenceEngine = document.getElementById('inferenceEngine').value;
+    if (inferenceEngine === 'pass') {
+        showModelAlert('info', 'Pass does not use a model. Configure it in Pipeline Builder.');
+        return;
+    }
     const modelFile = document.getElementById('modelFile').files[0];
     const ultralyticsModel = document.getElementById('ultralyticsModel').value;
     
     // Check if we have either a file upload or ultralytics model selected
     if (!modelFile && !ultralyticsModel) {
-        showAlert('warning', 'Please select a file to upload or choose an Ultralytics model to download');
+        showModelAlert('warning', 'Please select a file to upload or choose an Ultralytics model to download');
         return;
     }
     
@@ -477,6 +502,7 @@ document.getElementById('uploadForm').addEventListener('submit', async function(
     formData.append('description', document.getElementById('description').value);
     formData.append('name', document.getElementById('modelName').value);
     
+    if (!beginModelOperation()) return;
     const progressBar = document.querySelector('#uploadProgress .progress-bar');
     const progressDiv = document.getElementById('uploadProgress');
     const uploadSubmitBtn = document.getElementById('uploadSubmitBtn');
@@ -537,17 +563,19 @@ document.getElementById('uploadForm').addEventListener('submit', async function(
         
         const result = await uploadPromise;
         
-        showAlert('success', `Model uploaded successfully! Model ID: ${result.model_id}`);
+        showModelAlert('success', `Model stored (existing identical models are reused). Model ID: ${result.model_id}`);
         refreshModels();
         document.getElementById('uploadForm').reset();
+        document.getElementById('inferenceEngine').dispatchEvent(new Event('change'));
         
         // Reset the supported formats text after form reset
         const supportedFormatsText = document.getElementById('supportedFormatsText');
         supportedFormatsText.textContent = 'Supported formats: .pt (Ultralytics), .zip (Geti), .onnx (ONNX Runtime)';
         
     } catch (error) {
-        showAlert('error', `Upload failed: ${error.message}`);
+        showModelAlert('error', `Upload failed: ${error.message}`);
     } finally {
+        endModelOperation();
         progressDiv.style.display = 'none';
         progressBar.style.width = '0%';
         progressBar.textContent = '';
@@ -558,15 +586,18 @@ document.getElementById('uploadForm').addEventListener('submit', async function(
 
 // Download Ultralytics model
 async function downloadUltralyticsModel() {
+    if (modelOperationPending) return;
     const modelName = document.getElementById('ultralyticsModel').value;
     const description = document.getElementById('description').value;
     const name = document.getElementById('modelName').value;
     
     if (!modelName) {
-        showAlert('warning', 'Please select a model to download');
+        showModelAlert('warning', 'Please select a model to download');
         return;
     }
     
+    if (!beginModelOperation()) return;
+    const generation = modelOperationGeneration;
     const downloadBtn = document.getElementById('downloadUltralyticsBtn');
     const progressDiv = document.getElementById('downloadProgress');
     const progressBar = progressDiv.querySelector('.progress-bar');
@@ -602,15 +633,12 @@ async function downloadUltralyticsModel() {
             progressBar.style.width = '50%';
             detailsSpan.textContent = 'Processing downloaded model...';
             
-            // Wait a bit for visual feedback
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            
             progressBar.style.width = '100%';
             statusBadge.textContent = 'Complete';
             statusBadge.className = 'badge bg-success';
             detailsSpan.textContent = `${modelName} successfully downloaded and uploaded!`;
             
-            showAlert('success', `Model ${modelName} downloaded and uploaded successfully! Model ID: ${result.model_id}`);
+            showModelAlert('success', `Model ${modelName} downloaded and uploaded successfully! Model ID: ${result.model_id}`);
             refreshModels();
             
             // Reset form
@@ -628,14 +656,16 @@ async function downloadUltralyticsModel() {
         statusBadge.className = 'badge bg-danger';
         detailsSpan.textContent = `Download failed: ${error.message}`;
         
-        showAlert('error', `Download failed: ${error.message}`);
+        showModelAlert('error', `Download failed: ${error.message}`);
     } finally {
+        endModelOperation();
         // Re-enable button
         downloadBtn.disabled = false;
         downloadBtn.innerHTML = '<i class="fas fa-download me-2"></i>Download from Ultralytics';
         
         // Hide progress after a delay
         setTimeout(() => {
+            if (generation !== modelOperationGeneration) return;
             progressDiv.style.display = 'none';
             progressBar.style.width = '0%';
             progressBar.className = 'progress-bar progress-bar-striped progress-bar-animated';
@@ -645,6 +675,7 @@ async function downloadUltralyticsModel() {
 
 // Refresh models list
 async function refreshModels() {
+    const sequence = ++modelsRefreshSequence;
     const modelsList = document.getElementById('modelsList');
     modelsList.innerHTML = `
         <div class="text-muted">
@@ -655,6 +686,7 @@ async function refreshModels() {
     try {
         const response = await fetch('/api/models');
         const data = await response.json();
+        if (sequence !== modelsRefreshSequence) return;
         
         if (response.ok) {
             const models = data.models;
@@ -678,15 +710,16 @@ async function refreshModels() {
             modelsList.innerHTML = `
                 <div class="alert alert-danger">
                     <i class="fas fa-exclamation-triangle me-2"></i>
-                    Failed to load models: ${data.error}
+                    Failed to load models: ${esc(data.error)}
                 </div>
             `;
         }
     } catch (error) {
+        if (sequence !== modelsRefreshSequence) return;
         modelsList.innerHTML = `
             <div class="alert alert-danger">
                 <i class="fas fa-exclamation-triangle me-2"></i>
-                Error loading models: ${error.message}
+                Error loading models: ${esc(error.message)}
             </div>
         `;
     }
@@ -705,16 +738,16 @@ function displayModels(models) {
 
 // Display models in list view
 // Lifecycle badge from the PostgreSQL registry: status (lifecycle) + validation_status +
-// reason are separate fields; only AVAILABLE + PASSED is usable by pipelines.
+// reason are separate fields; AVAILABLE + PASSED verifies storage, not runtime compatibility.
 function modelStatusBadge(metadata) {
     const st = metadata.status || 'UNKNOWN';
     const vs = metadata.validation_status || '';
     const reason = metadata.reason ? ` (${esc(metadata.reason)})` : '';
     const usable = st === 'AVAILABLE' && vs === 'PASSED';
     const cls = usable ? 'bg-success' : (st === 'STAGING' || st === 'VALIDATING') ? 'bg-info' : 'bg-danger';
-    const title = usable ? 'Registered and verified - usable by pipelines'
+    const title = usable ? 'Storage integrity verified. Runtime compatibility is checked when starting a pipeline.'
                          : `Not usable: status=${esc(st)} validation=${esc(vs)}${reason}`;
-    return `<span class="badge ${cls}" title="${title}">${esc(st)}${usable ? '' : ' / ' + esc(vs)}</span>`;
+    return `<span class="badge ${cls}" title="${title}">${usable ? 'Stored' : esc(st)}${usable ? '' : ' / ' + esc(vs)}</span>`;
 }
 
 function displayModelsList(models) {
@@ -750,7 +783,7 @@ function displayModelsList(models) {
                         </div>
                         <div class="ms-3">
                             <button class="btn btn-outline-danger btn-sm" 
-                                    onclick="deleteModel('${esc(modelId)}')" 
+                                    data-model-id="${esc(modelId)}" onclick="deleteModel(this.dataset.modelId)"
                                     title="Delete model">
                                 <i class="fas fa-trash"></i> Delete
                             </button>
@@ -791,7 +824,7 @@ function displayModelsGrid(models) {
                     </div>
                     <div class="card-footer">
                         <button class="btn btn-outline-danger btn-sm w-100" 
-                                onclick="deleteModel('${esc(modelId)}')">
+                                data-model-id="${esc(modelId)}" onclick="deleteModel(this.dataset.modelId)">
                             <i class="fas fa-trash me-1"></i> Delete
                         </button>
                     </div>
@@ -848,22 +881,27 @@ function updateStorageStats(stats) {
 
 // Delete a model
 async function deleteModel(modelId) {
+    if (pendingModelDeletes.has(modelId)) return;
     if (confirm(`Are you sure you want to delete this model? This action cannot be undone.`)) {
+        pendingModelDeletes.add(modelId);
+        modelsRefreshSequence++;
         try {
-            const response = await fetch(`/api/models/${modelId}`, {
+            const response = await fetch(`/api/models/${encodeURIComponent(modelId)}`, {
                 method: 'DELETE'
             });
             
             const result = await response.json();
             
             if (response.ok) {
-                showAlert('success', `Model deleted successfully`);
+                showModelAlert('success', `Model deleted successfully`);
                 refreshModels();
             } else {
-                showAlert('error', `Failed to delete model: ${result.error}`);
+                showModelAlert('error', `Failed to delete model: ${result.error}`);
             }
         } catch (error) {
-            showAlert('error', `Failed to delete model: ${error.message}`);
+            showModelAlert('error', `Failed to delete model: ${error.message}`);
+        } finally {
+            pendingModelDeletes.delete(modelId);
         }
     }
 }

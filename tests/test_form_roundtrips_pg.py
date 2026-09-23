@@ -80,9 +80,19 @@ def one(env, sql, **params):
         return c.execute(text(sql), params).mappings().one()
 
 
+def model_checkpoint_bytes(marker='audit'):
+    import zipfile
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, 'w') as archive:
+        archive.writestr('archive/data.pkl', b'\x80\x02}q\x00.')
+        archive.writestr('archive/version', '3')
+        archive.writestr('archive/audit.txt', marker)
+    return stream.getvalue()
+
+
 def model(env):
     name = 'audit-' + uuid.uuid4().hex[:8]
-    content = b'AUDIT-REGISTRY-FIXTURE-' + name.encode()
+    content = model_checkpoint_bytes(name)
     r = env['client'].post('/api/models/upload', headers={'X-CSRFToken': env['csrf']}, data={
         'file': (io.BytesIO(content), 'same.pt'), 'engine_type': 'ultralytics',
         'name': name, 'description': 'Model form description'})
@@ -535,3 +545,93 @@ def test_management_db_failure_does_not_report_success_or_apply_runtime(live_for
         assert one(live_forms, 'SELECT config FROM pipelines WHERE pipeline_id=:pid', pid=p['id'])['config']['inference_enabled'] is True
     finally:
         manager.active_pipelines.pop(p['id'], None)
+
+
+# Models page ingestion regressions. Fixtures are structural, not inference-ready weights.
+def models_upload(env, filename, content, engine='ultralytics', name='Audit'):
+    return env['client'].post('/api/models/upload', headers={'X-CSRFToken':env['csrf']}, data={
+        'file': (io.BytesIO(content), filename), 'engine_type':engine, 'name':name, 'description':'Audit description'})
+
+
+@pytest.mark.parametrize('filename,content,engine', [
+    ('empty.pt',b'','ultralytics'), ('invalid.pt',b'not a model','ultralytics'),
+    ('invalid.pth',b'not a model','ultralytics'), ('unknown.pt',b'not a model','unknown_engine'),
+    ('wrong.pt',b'not a model','onnx'),
+])
+def test_models_reject_invalid_upload_without_registry_row(live_forms, filename, content, engine):
+    before = one(live_forms, 'SELECT count(*) AS n FROM models')['n']
+    response = models_upload(live_forms, filename, content, engine)
+    assert response.status_code == 400, response.json
+    assert one(live_forms, 'SELECT count(*) AS n FROM models')['n'] == before
+
+
+def test_models_geti_zip_is_stored_and_unsafe_zip_rejected(live_forms):
+    import zipfile
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, 'w') as archive:
+        archive.writestr('model/model.xml', '<net/>')
+        archive.writestr('model/model.bin', b'fixture')
+    result = models_upload(live_forms, uuid.uuid4().hex+'.zip', stream.getvalue(), 'geti')
+    assert result.status_code == 200, result.json
+    bad = io.BytesIO()
+    with zipfile.ZipFile(bad, 'w') as archive:
+        archive.writestr('../model.xml', '<net/>')
+        archive.writestr('model.bin', b'fixture')
+    assert models_upload(live_forms, 'unsafe.zip', bad.getvalue(), 'geti').status_code == 400
+
+
+def test_models_repeat_preserves_metadata_and_engine_conflicts(live_forms, tmp_path):
+    from InferenceNode.model_uploads import ModelConflictError
+    filename = uuid.uuid4().hex+'.pt'
+    data = model_checkpoint_bytes(filename)
+    first = models_upload(live_forms, filename, data, name='First')
+    second = models_upload(live_forms, filename, data, name='Second')
+    assert first.status_code == second.status_code == 200
+    assert first.json['model_id'] == second.json['model_id']
+    assert one(live_forms, 'SELECT name FROM models WHERE model_id=:mid', mid=first.json['model_id'])['name'] == 'First'
+    source = tmp_path/'model.pt'; source.write_bytes(data)
+    with pytest.raises(ModelConflictError):
+        live_forms['node'].model_repo.store_model(str(source), filename, 'onnx')
+
+
+def test_models_concurrent_identical_uploads_are_idempotent(live_forms, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    source = tmp_path/'upload.pt'; source.write_bytes(model_checkpoint_bytes(uuid.uuid4().hex))
+    filename = uuid.uuid4().hex+'.pt'
+    barrier = threading.Barrier(2)
+    def store():
+        barrier.wait(timeout=10)
+        return live_forms['node'].model_repo.store_model(str(source), filename, 'ultralytics')
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a = pool.submit(store); b = pool.submit(store)
+        first, second = a.result(timeout=20), b.result(timeout=20)
+    assert first == second
+    assert one(live_forms, 'SELECT count(*) AS n FROM models WHERE model_id=:mid', mid=first)['n'] == 1
+    assert Path(live_forms['node'].model_repo.get_model_path(first)).read_bytes() == source.read_bytes()
+
+
+def test_models_download_records_uploader_and_cleans_temporary_paths(live_forms, monkeypatch):
+    from ultralytics.utils import downloads
+    paths = []
+    def download(path):
+        paths.append(Path(path)); Path(path).write_bytes(model_checkpoint_bytes('download fixture'))
+        return path
+    monkeypatch.setattr(downloads, 'attempt_download_asset', download)
+    for _ in range(2):
+        response = live_forms['send']('/api/models/download-ultralytics', {'model_name':'yolo11n.pt', 'name':'Downloaded', 'description':'Source metadata'})
+        assert response.status_code == 200, response.json
+        row = one(live_forms, 'SELECT uploader_id,uploader_username,description FROM models WHERE model_id=:mid', mid=response.json['model_id'])
+        assert row['uploader_id'] is not None and row['uploader_username']=='form_audit_admin'
+        assert row['description']=='Source metadata'
+    assert paths[0].parent != paths[1].parent
+    assert all(not path.exists() for path in paths)
+    rejected = live_forms['send']('/api/models/download-ultralytics', {'model_name':'/tmp/unapproved.pt'})
+    assert rejected.status_code==400 and len(paths)==2
+
+
+def test_models_special_character_ids_are_deletable(live_forms):
+    from urllib.parse import quote
+    response = models_upload(live_forms, "operator's #model-"+uuid.uuid4().hex+'.pt', model_checkpoint_bytes('special'))
+    assert response.status_code == 200
+    assert live_forms['send']('/api/models/'+quote(response.json['model_id'], safe=''), method='DELETE').status_code==200

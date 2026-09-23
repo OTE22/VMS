@@ -168,6 +168,34 @@ class ModelRepository:
     def store_model(self, temp_file_path: str, original_filename: str, engine_type: str,
                     description: str = "", name: str = "", *, uploader_id=None,
                     uploader_username=None, model_id=None) -> str:
+        from .model_uploads import model_ingest_lock, ModelConflictError, ModelInputError
+        from . import model_registry as reg
+        from .artifact_migration import sha256_file
+        digest = hashlib.md5()
+        with open(temp_file_path, 'rb') as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b''):
+                digest.update(chunk)
+        if not os.path.getsize(temp_file_path):
+            raise ModelInputError('The model file is empty')
+        identity = model_id or f"{os.path.splitext(original_filename)[0]}_{digest.hexdigest()[:8]}"
+        with model_ingest_lock(identity):
+            existing = reg.get_model(identity)
+            if existing:
+                if existing['engine_type'] != engine_type:
+                    raise ModelConflictError('These model bytes are already registered for another engine')
+                if existing['status'] == 'AVAILABLE':
+                    path = self.get_model_path(identity)
+                    if not path or sha256_file(path) != sha256_file(temp_file_path):
+                        raise ModelConflictError('Existing model differs or is unavailable; refusing to overwrite it')
+                    return identity  # Idempotent: preserve name, description and uploader.
+                raise ModelConflictError('A previous upload exists but is unavailable. Remove it before retrying.')
+            return self._store_model_unlocked(temp_file_path, original_filename, engine_type,
+                description, name, uploader_id=uploader_id, uploader_username=uploader_username,
+                model_id=identity)
+
+    def _store_model_unlocked(self, temp_file_path: str, original_filename: str, engine_type: str,
+                    description: str = "", name: str = "", *, uploader_id=None,
+                    uploader_username=None, model_id=None) -> str:
         from . import artifact_paths as ap
         from . import model_registry as reg
         from .artifact_migration import sha256_file
@@ -179,7 +207,7 @@ class ModelRepository:
         with open(temp_file_path, 'rb') as f:
             file_content = f.read()
         model_id = model_id or self._generate_model_id(original_filename, file_content)
-        ext = os.path.splitext(original_filename)[1]
+        ext = os.path.splitext(original_filename)[1].lower()
         fmt = (ext.lstrip('.') or 'bin').lower()
         stored_filename = f"{model_id}{ext}"
         rel = f"{self._safe(model_id)}/{self._safe(stored_filename)}"
@@ -200,7 +228,7 @@ class ModelRepository:
             with open(staged, 'wb') as out:
                 out.write(file_content); out.flush(); os.fsync(out.fileno())
             self._set_artifact_state(rel, S.VALIDATING, V.PENDING, None)
-            if fmt not in ("pt", "onnx", "engine", "xml", "bin", "tflite", "pb"):
+            if fmt not in ("pt", "zip", "onnx", "engine", "xml", "bin", "tflite", "pb"):
                 raise ValueError(f"unsupported model format .{fmt}")
             sha, size = sha256_file(staged)
             if size != len(file_content):
@@ -291,6 +319,11 @@ class ModelRepository:
 
     # ------------------------------------------------------------ DELETE (batch-safe)
     def delete_model(self, model_id: str) -> bool:
+        from .model_uploads import model_ingest_lock
+        with model_ingest_lock(model_id):
+            return self._delete_model_unlocked(model_id)
+
+    def _delete_model_unlocked(self, model_id: str) -> bool:
         """DELETING -> move EVERY registered artifact to managed trash -> only after ALL
         moves succeed remove the rows -> purge trash. Partial failure: restore moved files
         (hash-verified) and go back to AVAILABLE, else stay DELETING with everything

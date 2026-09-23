@@ -262,7 +262,7 @@ def test_uploads_were_never_affected(env):
     so the upload path always preserved the suffix. Pinned so a 'consistency' refactor that
     aligns upload with the old migration behaviour cannot reintroduce the bug."""
     src = open(os.path.join(REPO, "InferenceNode", "model_repo.py"), encoding="utf-8").read()
-    i = src.index("def store_model")
+    i = src.index("def _store_model_unlocked")
     body = src[i:i + 1500]
     assert 'ext = os.path.splitext(original_filename)[1]' in body
     assert 'stored_filename = f"{model_id}{ext}"' in body

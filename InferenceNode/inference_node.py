@@ -1078,6 +1078,8 @@ class InferenceNode:
                 with tempfile.TemporaryDirectory(prefix='armyeye-model-upload-') as temp_dir:
                     temp_path = os.path.join(temp_dir, safe_name)
                     file.save(temp_path)
+                    from InferenceNode.model_uploads import validate_upload
+                    validate_upload(temp_path, file.filename, engine_type)
                     # Store model: PostgreSQL registry (STAGING -> ... -> AVAILABLE) +
                     # ARTIFACT_ROOT bytes. Uploader identity is server-derived (never from
                     # the client) and recorded on the model row itself - the old separate
@@ -1102,6 +1104,9 @@ class InferenceNode:
                     })
                     
             except Exception as e:
+                from InferenceNode.model_uploads import ModelInputError, ModelConflictError
+                if isinstance(e, (ModelInputError, ModelConflictError)):
+                    return jsonify({'error': str(e)}), (409 if isinstance(e, ModelConflictError) else 400)
                 self.logger.error(f"Model upload error: {str(e)}")
                 return jsonify({'error': str(e)}), 500
         
@@ -1213,119 +1218,31 @@ class InferenceNode:
         @self.app.route('/api/models/download-ultralytics', methods=['POST'])
         @self._admin_csrf
         def download_ultralytics_model():
-            """Download a model from Ultralytics and add it to the repository"""
+            """Download into an isolated directory and register without loading weights."""
+            from InferenceNode.model_uploads import validate_upload, validate_download_name, ModelInputError, ModelConflictError
+            from flask_login import current_user
             try:
-                data = request.get_json()
-                if not data:
-                    return jsonify({'error': 'No data provided'}), 400
-                
-                model_name = data.get('model_name', '').strip()
-                description = data.get('description', '').strip()
-                name = data.get('name', '').strip()
-                
-                if not model_name:
-                    return jsonify({'error': 'Model name is required'}), 400
-                
-                self.logger.info(f"Starting download of Ultralytics model: {model_name}")
-                
-                try:
-                    # Import ultralytics - this should be available if user selected ultralytics
-                    from ultralytics import YOLO
-                except ImportError:
-                    return jsonify({'error': 'Ultralytics package not available. Please install ultralytics: pip install ultralytics'}), 500
-                
-                # Track if model was downloaded to project root (for cleanup)
-                project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                project_root_model_path = os.path.join(project_root, model_name)
-                model_was_in_root_before = os.path.exists(project_root_model_path)
-                
-                try:
-                    # Download the model using ultralytics
-                    self.logger.info(f"Downloading {model_name} from Ultralytics...")
-                    
-                    # Initialize YOLO with the model name - this will download it automatically
-                    model = YOLO(model_name)
-                    
-                    # Get the actual model file path after download
-                    # Ultralytics downloads models to a cache directory or current directory
-                    model_path = None
-                    
-                    # Try to get model path from the YOLO object
-                    if hasattr(model, 'model_path') and isinstance(model.model_path, str):
-                        model_path = model.model_path
-                    elif hasattr(model, 'ckpt_path') and isinstance(model.ckpt_path, str):
-                        model_path = model.ckpt_path
-                    
-                    if not model_path or not os.path.exists(model_path):
-                        # Try to find the model in ultralytics cache
-                        cache_dir = os.path.join(os.path.expanduser('~'), '.ultralytics', 'cache')
-                        potential_path = os.path.join(cache_dir, model_name)
-                        
-                        if os.path.exists(potential_path):
-                            model_path = potential_path
-                        # Check if it was downloaded to project root
-                        elif os.path.exists(project_root_model_path):
-                            model_path = project_root_model_path
-                            self.logger.info(f"Found model in project root: {project_root_model_path}")
-                        else:
-                            # Search for the model file in the cache directory
-                            for root, dirs, files in os.walk(cache_dir):
-                                for file in files:
-                                    if file == model_name:
-                                        model_path = os.path.join(root, file)
-                                        break
-                                if model_path:
-                                    break
-                    
-                    if not model_path or not isinstance(model_path, str) or not os.path.exists(model_path):
-                        return jsonify({'error': f'Failed to locate downloaded model: {model_name}'}), 500
-                    
-                    # Generate description if not provided
-                    if not description:
-                        description = f"Pre-trained {model_name} model from Ultralytics"
-                    
-                    # Generate name if not provided - use model name without extension
-                    if not name:
-                        name = os.path.splitext(model_name)[0]
-                    
-                    # Store the model in the repository
-                    model_id = self.model_repo.store_model(
-                        model_path,
-                        model_name,
-                        'ultralytics',  # Engine type
-                        description,
-                        name
-                    )
-                    
-                    self.logger.info(f"Ultralytics model downloaded and stored successfully: {model_id}")
-                    
-                    return jsonify({
-                        'model_id': model_id,
-                        'status': 'downloaded',
-                        'model_name': model_name,
-                        'message': f'Model {model_name} downloaded and uploaded successfully'
-                    })
-                    
-                except Exception as download_error:
-                    self.logger.error(f"Error downloading Ultralytics model {model_name}: {str(download_error)}")
-                    return jsonify({'error': f'Failed to download model: {str(download_error)}'}), 500
-                    
-                finally:
-                    # Clean up model file from project root if it was downloaded there
-                    try:
-                        # Only delete if the file exists in project root AND it wasn't there before download
-                        if (os.path.exists(project_root_model_path) and 
-                            not model_was_in_root_before and 
-                            os.path.isfile(project_root_model_path)):
-                            os.remove(project_root_model_path)
-                            self.logger.info(f"Cleaned up downloaded model from project root: {project_root_model_path}")
-                    except Exception as cleanup_error:
-                        self.logger.warning(f"Failed to cleanup model file from project root: {cleanup_error}")
-                
-            except Exception as e:
-                self.logger.error(f"Download Ultralytics model error: {str(e)}")
-                return jsonify({'error': str(e)}), 500
-        
+                data = request.get_json() or {}
+                model_name = data.get('model_name', '')
+                validate_download_name(model_name)
+                description = data.get('description') or f'Pre-trained {model_name} model from Ultralytics'
+                name = data.get('name') or os.path.splitext(model_name)[0]
+                from ultralytics.utils.downloads import attempt_download_asset
+                with tempfile.TemporaryDirectory(prefix='armyeye-model-download-') as directory:
+                    downloaded = attempt_download_asset(os.path.join(directory, model_name))
+                    if not os.path.isfile(downloaded) or os.path.commonpath([os.path.realpath(downloaded), os.path.realpath(directory)]) != os.path.realpath(directory):
+                        raise RuntimeError('Download did not produce a model in its temporary directory')
+                    validate_upload(downloaded, model_name, 'ultralytics')
+                    model_id = self.model_repo.store_model(downloaded, model_name, 'ultralytics',
+                        description, name, uploader_id=current_user.id, uploader_username=current_user.username)
+                return jsonify({'model_id': model_id, 'status': 'downloaded', 'model_name': model_name,
+                                'message': 'Model downloaded and stored. Runtime compatibility is checked when starting a pipeline.'})
+            except (ModelInputError, ModelConflictError) as exc:
+                return jsonify({'error': str(exc)}), (409 if isinstance(exc, ModelConflictError) else 400)
+            except Exception as exc:
+                self.logger.error('Model download failed: %s', exc)
+                return jsonify({'error': 'Model download failed; please retry.'}), 500
+
         @self.app.route('/api/models', methods=['GET'])
         def list_models():
             """List all uploaded models"""

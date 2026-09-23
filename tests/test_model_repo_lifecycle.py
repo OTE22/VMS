@@ -194,8 +194,8 @@ def test_delete_db_failure_after_moves_keeps_everything_recoverable_in_trash(rep
     @contextlib.contextmanager
     def failing_session():
         state["calls"] += 1
-        # the DELETING commit is the first session; the row-removal is the second
-        if state["calls"] == 2:
+        # Lock session, then DELETING commit, then row removal.
+        if state["calls"] == 3:
             raise RuntimeError("db down at row removal")
         with real() as s:
             yield s
