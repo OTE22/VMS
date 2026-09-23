@@ -143,6 +143,7 @@ class InferencePipeline:
         # before the long cooldown; HTTP acceptance is not face recognition.
         self.PERSON_CAPTURE_COUNT = 3
         self.PERSON_CAPTURE_INTERVAL_SECONDS = 2.0
+        self.PERSON_QUALITY_SELECTION = False  # Opt in after representative-footage validation.
         self.TRACK_LOST_TIMEOUT_SECONDS = 2.0  # Publish a track's best if it hasn't been seen for this long (person left frame)
         self.DEDUP_IOU_THRESHOLD = 0.4
         self.DEDUP_TTL_SECONDS = 4.0
@@ -264,9 +265,9 @@ class InferencePipeline:
                 f"{getattr(self, '_tracking_session', '')}:{getattr(self, '_tracking_epoch', 0)}:{det.get('track_id')}")
 
     def _update_track_candidate(self, det, frame, now):
-        """Create/update the highest-confidence candidate for a tracked detection.
+        """Create/update the best-quality candidate for a tracked person.
         An owned snapshot is shared across detections on the same captured frame.
-        Only higher-confidence observations replace a candidate's selected frame."""
+        Other classes and unavailable quality hints use confidence."""
         track_key = self._make_track_key(det)
         confidence = det.get('confidence', 0)
         class_name = det.get('class_name', 'unknown')
@@ -302,8 +303,11 @@ class InferencePipeline:
                     self._dropped_events += 1
                 return
             entry = self._track_best.get(track_key)
+            from InferenceNode.candidate_quality import candidate_quality
+            quality = candidate_quality(frame, det) if self.PERSON_QUALITY_SELECTION else None
             if entry is None:
                 self._track_best[track_key] = {
+                    'quality': quality,
                     'best_det': det,
                     'best_frame': self._snapshot(frame),
                     'captured_at': self._last_capture_wall or now,
@@ -315,7 +319,10 @@ class InferencePipeline:
                                  f"class={class_name} track_id={det.get('track_id')} track_key={track_key} conf={confidence:.3f}")
             else:
                 entry['last_seen'] = now
-                if confidence > entry['best_det'].get('confidence', 0):
+                better = (quality > entry['quality'] if quality is not None and entry.get('quality') is not None
+                          else confidence > entry['best_det'].get('confidence', 0))
+                if better:
+                    entry['quality'] = quality
                     entry['best_det'] = det
                     entry['best_frame'] = self._snapshot(frame)
                     entry['captured_at'] = self._last_capture_wall or now
@@ -326,6 +333,8 @@ class InferencePipeline:
     def _track_ready(self, entry, now):
         """A track is ready to publish once it has settled or the person has left."""
         best_conf = entry['best_det'].get('confidence', 0)
+        if entry.get('quality') is not None and now - entry['first_seen'] < min(1.0, self.MAX_COLLECT_SECONDS):
+            return False  # Observe several frames before trusting a person-confidence spike.
         return (best_conf >= self.IMMEDIATE_SEND_CONFIDENCE
                 or (now - entry['last_improved']) >= self.SEND_BUFFER_SECONDS
                 or (now - entry['first_seen']) >= self.MAX_COLLECT_SECONDS
@@ -549,6 +558,7 @@ class InferencePipeline:
         # NOT exactly-once processing.
         return {
             "event_id": uuid.uuid4().hex,
+            "processing_feedback": str(det.get('class_name', '')).lower() == 'person',
             "node_id": self.node_id or self.id,
             "pipeline_id": self.id,
             "pipeline_name": self.pipeline_name,
@@ -606,6 +616,7 @@ class InferencePipeline:
             res = self.result_publisher.publish_sync(job['payload'], prepared_images=job['images'],
                                                      destination_ids=remaining)
             job['accepted'] = sorted(set(job['accepted']) | set(res['successful_destinations']))
+            job.setdefault('processing_outcomes', {}).update(res.get('processing_outcomes', {}))
             job['terminal'] = sorted(set(job['terminal']) | set(res['terminal_destinations']) |
                                      set(res['disabled_destinations']) | set(res['skipped_destinations']))
             # Deleted destinations must not make an event look delivered.
@@ -697,6 +708,16 @@ class InferencePipeline:
                          if now - previous.get('sent_at', 0) < self.TRACK_TTL_SECONDS else 0)
                 self._track_last_sent[track_key] = {
                     'sent_at': now, 'bbox': bbox, 'capture_count': count + 1}
+                outcomes = job.get('processing_outcomes', {})
+                # Only committed usable faces end the burst early. Legacy
+                # receivers and every other outcome retain bounded fresh retries.
+                face_outcomes = [v for v in outcomes.values() if v and v.startswith('FACE_')]
+                if face_outcomes and all(v == 'FACE_SAVED' for v in face_outcomes):
+                    self._track_last_sent[track_key]['capture_count'] = self.PERSON_CAPTURE_COUNT
+                if outcomes:
+                    self.logger.info('FACE_RESULT pipeline_id=%s event_id=%s track_id=%s outcomes=%s',
+                                     self.id, job.get('payload', {}).get('event_id'),
+                                     det.get('track_id'), outcomes)
                 self._pending_track_keys.discard(track_key)
                 self._failed_backoff.pop(track_key, None)
             if job.get('iou_key') is not None:
@@ -948,6 +969,8 @@ class InferencePipeline:
         print(f"DEBUG: enable_publisher called with id='{id}'")
         if id == 'all':
             for rp in self.result_publisher.destinations:
+                if hasattr(rp, 'reset_failure_count'):
+                    rp.reset_failure_count()
                 rp.enabled = True
                 # Reset frame count if paused
                 if hasattr(rp, 'frame_limit_reached') and rp.frame_limit_reached:
@@ -964,6 +987,8 @@ class InferencePipeline:
             
             rp = self.result_publisher.get_by_id(id)
             if rp:
+                if hasattr(rp, 'reset_failure_count'):
+                    rp.reset_failure_count()
                 # Reset frame count if paused (when re-enabling via UI toggle)
                 if hasattr(rp, 'frame_limit_reached') and rp.frame_limit_reached:
                     if hasattr(rp, 'reset_frame_count'):
@@ -1727,6 +1752,8 @@ class InferencePipeline:
         self.PERSON_CAPTURE_COUNT = int(num('person_capture_count', self.PERSON_CAPTURE_COUNT, 1, 3))
         self.PERSON_CAPTURE_INTERVAL_SECONDS = num(
             'person_capture_interval_seconds', self.PERSON_CAPTURE_INTERVAL_SECONDS, 1.0)
+        if isinstance(cfg.get('person_quality_selection'), bool):
+            self.PERSON_QUALITY_SELECTION = cfg['person_quality_selection']
         self.TRACK_LOST_TIMEOUT_SECONDS = num('track_lost_timeout_seconds', self.TRACK_LOST_TIMEOUT_SECONDS, 0.0)
         self.PUBLISH_MAX_RETRIES = int(num('publish_max_retries', self.PUBLISH_MAX_RETRIES, 0, 20))
         self.PUBLISH_RETRY_DELAY_SECONDS = num('publish_retry_delay_seconds', self.PUBLISH_RETRY_DELAY_SECONDS, 0.0, 30.0)

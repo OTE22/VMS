@@ -472,7 +472,8 @@ class BaseResultDestination(ABC):
         with self._lock:
             self.last_publish_time = 0
 
-        status = "permanent_failure" if result.terminal_delivery else "failed"
+        status = ("rate_limited" if result.outcome == "PROCESSING_PENDING" else
+                  "permanent_failure" if result.terminal_delivery else "failed")
         return {"status": status,
                 "error": result.error or "publish returned failure",
                 "outcome": result.outcome,

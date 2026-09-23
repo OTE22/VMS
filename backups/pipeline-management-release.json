@@ -1,0 +1,80 @@
+{
+  "releases": [
+    {
+      "container": "VMS",
+      "service": "vms",
+      "compose": [
+        "docker",
+        "compose",
+        "--project-directory",
+        "/home/itdirect-ai/Desktop/VMS",
+        "--env-file",
+        "/home/itdirect-ai/Desktop/VMS/.env",
+        "-p",
+        "armyeye",
+        "-f",
+        "/home/itdirect-ai/Desktop/VMS/compose.yaml",
+        "-f",
+        "/home/itdirect-ai/Desktop/VMS/compose.prod.yaml",
+        "-f",
+        "/home/itdirect-ai/Desktop/VMS/compose.gpu.yaml"
+      ],
+      "release_image": "armyeye-vms:pipeline-management-20260923t060138z",
+      "image_id": "sha256:66e100028c3be581dff2f4691915ea9df40c53819f73ae928698a3af29612d45",
+      "previous_image_id": "sha256:1d74a41f85961abf693938c3f19b697eff5ac5e68c29a7b4b3495d579bff659f",
+      "rollback_image": "armyeye-vms:before-pipeline-management-20260923t060138z",
+      "configured_image": "armyeye-vms",
+      "hashes": {
+        "/app/InferenceNode/inference_node.py": "a4446a0fe2a3b3d7c1257aeb251cd2de6a47e43dd96aabe9f84eaa74789356ce",
+        "/app/InferenceNode/pipeline_repository.py": "49b3a1e2296f5cf6d261931cf6a3832ecb9021e579ef0e81ead868b1f47ec54d",
+        "/app/InferenceNode/pipeline_manager.py": "74932c4ebe73a5b041b47ad976c4d9856c3f63a3bf293bf3b7e2b70a565823ed",
+        "/app/InferenceNode/templates/pipeline_management.html": "dca6aa105e644d98024576d5a17b514b97183f067d8f56a58c4df9b6997dd3eb"
+      },
+      "mounts": [
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/InferenceNode/media",
+          "/app/InferenceNode/media",
+          true
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/InferenceNode/pipelines",
+          "/app/InferenceNode/pipelines",
+          true
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/InferenceNode/logs",
+          "/app/InferenceNode/logs",
+          true
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/secrets/face-internal-ca.crt",
+          "/run/secrets/face_internal_ca",
+          false
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/secrets/armyeye_config_key",
+          "/run/secrets/armyeye_config_key",
+          false
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/InferenceNode/data",
+          "/app/InferenceNode/data",
+          true
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/InferenceNode/model_repository",
+          "/app/InferenceNode/model_repository",
+          true
+        ]
+      ],
+      "state": "deployed_verified"
+    }
+  ]
+}

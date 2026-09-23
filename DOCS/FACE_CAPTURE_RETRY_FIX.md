@@ -32,5 +32,24 @@ rate, tracker association, and the receiver's single-face crop policy unchanged.
 Recognition improvement on actual footage has not been measured.
 
 Regression coverage uses synthetic frames and an isolated queue, without live
-camera input, database writes, or production requests. Source changes do not
-take effect in running containers until deployed.
+camera input, database writes, or production requests. All 130 targeted tests
+passed (124 VMS tests and 6 receiver tests).
+
+## Deployment — 2026-09-22
+
+Both services were deployed using images derived from their previous production
+images, replacing only the affected Python file:
+
+- VMS: `armyeye-vms:face-capture-20260922t055913z`
+- Receiver: `face-detector-receiver:face-capture-20260922t055913z`
+
+The receiver queue was empty before restart. Both containers passed health
+checks, the receiver reported ready, and the deployed file hashes, environment,
+and data mounts were verified. The receiver proxy was reloaded after recreation.
+Prior images are preserved for rollback; image IDs and deployment commands are
+recorded in `backups/face-capture-release.json`.
+
+Post-deployment checks passed: receiver readiness and authenticated webhook GET
+through the production TLS proxy; VMS health, info, dashboard, pipeline management,
+pipeline builder, pipeline-list API (2 pipelines), and media page. All returned
+HTTP 200. No detection events were sent for these checks.

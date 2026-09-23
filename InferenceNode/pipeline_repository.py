@@ -177,6 +177,32 @@ class PipelineRepository:
             s.flush()
             return _row_to_dict(p)
 
+    def set_control(self, pipeline_id: str, enabled: bool, publisher_id=None) -> bool:
+        """Serialize control writes and change only the requested saved flag.
+
+        Secret values remain in their existing stored representation; this operation
+        neither decrypts nor replaces unrelated configuration.
+        """
+        from copy import deepcopy
+        with get_session() as session:
+            row = session.execute(select(Pipeline).where(
+                Pipeline.pipeline_id == str(pipeline_id)).with_for_update()).scalar_one_or_none()
+            if row is None:
+                return False
+            config = deepcopy(row.config or {})
+            if publisher_id is None:
+                config['inference_enabled'] = bool(enabled)
+            else:
+                destination = next((d for d in config.get('destinations', [])
+                                    if str(d.get('id')) == str(publisher_id)), None)
+                if destination is None:
+                    return False
+                destination['enabled'] = bool(enabled)
+            row.config = config
+            row.updated_at = datetime.utcnow()
+            session.flush()
+        return True
+
     def set_status(self, pipeline_id: str, status: str) -> None:
         """Record last-known state. This is NOT proof the pipeline is running - the API
         always overlays live status from PipelineManager."""

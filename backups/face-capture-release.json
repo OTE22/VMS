@@ -1,0 +1,214 @@
+{
+  "releases": [
+    {
+      "container": "VMS",
+      "service": "vms",
+      "compose": [
+        "docker",
+        "compose",
+        "--project-directory",
+        "/home/itdirect-ai/Desktop/VMS",
+        "--env-file",
+        "/home/itdirect-ai/Desktop/VMS/.env",
+        "-p",
+        "armyeye",
+        "-f",
+        "/home/itdirect-ai/Desktop/VMS/compose.yaml",
+        "-f",
+        "/home/itdirect-ai/Desktop/VMS/compose.prod.yaml",
+        "-f",
+        "/home/itdirect-ai/Desktop/VMS/compose.gpu.yaml"
+      ],
+      "release_image": "armyeye-vms:face-capture-20260922t055913z",
+      "image_id": "sha256:0419d890b9e58fc80608930ec3213793abf26522451868f67168176b4bb9acc9",
+      "previous_image_id": "sha256:90c5d55c871148e1602d43c8d4b3e9ade1d1523d6e5c2033231e615eb34aa175",
+      "rollback_image": "armyeye-vms:before-face-capture-20260922t055913z",
+      "configured_image": "armyeye-vms",
+      "target": "/app/InferenceNode/pipeline.py",
+      "sha256": "f3105c86d08e0fbc8e9338e2139723eb4baf3563e6fce2ca992f17163a073fca",
+      "mounts": [
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/secrets/face-internal-ca.crt",
+          "/run/secrets/face_internal_ca",
+          false
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/InferenceNode/data",
+          "/app/InferenceNode/data",
+          true
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/InferenceNode/logs",
+          "/app/InferenceNode/logs",
+          true
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/InferenceNode/media",
+          "/app/InferenceNode/media",
+          true
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/InferenceNode/model_repository",
+          "/app/InferenceNode/model_repository",
+          true
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/InferenceNode/pipelines",
+          "/app/InferenceNode/pipelines",
+          true
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VMS/secrets/armyeye_config_key",
+          "/run/secrets/armyeye_config_key",
+          false
+        ]
+      ],
+      "state": "deployed_verified"
+    },
+    {
+      "container": "face_detector_prod-face_recognition-1",
+      "service": "face_recognition",
+      "compose": [
+        "docker",
+        "compose",
+        "--project-directory",
+        "/home/itdirect-ai/Desktop/VAS/docker",
+        "--env-file",
+        "/home/itdirect-ai/Desktop/VAS/docker/.env",
+        "-p",
+        "face_detector_prod",
+        "-f",
+        "/home/itdirect-ai/Desktop/VAS/docker/docker-compose.prod.yml",
+        "-f",
+        "/home/itdirect-ai/Desktop/VAS/docker/docker-compose.prod.gpu.yml",
+        "-f",
+        "/home/itdirect-ai/Desktop/VAS/docker/gpu-allocation.generated.yml"
+      ],
+      "release_image": "face-detector-receiver:face-capture-20260922t055913z",
+      "image_id": "sha256:399c71aa31656aeca6401dd30b2a48ea9957ae6370439f9574a46568124e224c",
+      "previous_image_id": "sha256:9d0d0b39042809cd7bc97cc9044dfffd225a941f59c40fb82beac7ed34dd0643",
+      "rollback_image": "face-detector-receiver:before-face-capture-20260922t055913z",
+      "configured_image": "face_detector_prod-face_recognition",
+      "target": "/app/backend/routes/webhook.py",
+      "sha256": "0d4ad9258ba0626d1b2eedbad74e7afb1f7a7826d2959fa1b70591641a80f733",
+      "mounts": [
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VAS/map-data",
+          "/app/map-data",
+          false
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VAS/map-data/metadata",
+          "/app/map-data/metadata",
+          true
+        ],
+        [
+          "volume",
+          "/var/lib/docker/volumes/face_detector_prod_ml_artifacts_data/_data",
+          "/app/models/ml",
+          true
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VAS/secrets/bootstrap_admin_password",
+          "/run/secrets/bootstrap_admin_password",
+          false
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VAS/secrets/postgres_password_app",
+          "/run/secrets/postgres_password_app",
+          false
+        ],
+        [
+          "volume",
+          "/var/lib/docker/volumes/face_detector_prod_storage_data/_data",
+          "/app/storage",
+          true
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VAS/weights",
+          "/app/weights",
+          false
+        ],
+        [
+          "volume",
+          "/var/lib/docker/volumes/face_detector_prod_chromadb_cache/_data",
+          "/home/appuser/.cache/chroma",
+          true
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VAS/secrets/database_url_app",
+          "/run/secrets/database_url_app",
+          false
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VAS/secrets/jwt_secret",
+          "/run/secrets/jwt_secret",
+          false
+        ],
+        [
+          "volume",
+          "/var/lib/docker/volumes/face_detector_prod_logs_data/_data",
+          "/var/log/face-recognition",
+          true
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VAS/certs",
+          "/etc/nginx/certs",
+          false
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VAS/secrets/webhook_api_keys",
+          "/run/secrets/webhook_api_keys",
+          false
+        ],
+        [
+          "volume",
+          "/var/lib/docker/volumes/face_detector_prod_face_database_data/_data",
+          "/app/database",
+          true
+        ],
+        [
+          "volume",
+          "/var/lib/docker/volumes/face_detector_prod_backup_data/_data",
+          "/backups",
+          false
+        ],
+        [
+          "volume",
+          "/var/lib/docker/volumes/face_detector_prod_hf_cache_data/_data",
+          "/home/appuser/.cache/huggingface",
+          true
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VAS/secrets/redis_url",
+          "/run/secrets/redis_url",
+          false
+        ],
+        [
+          "bind",
+          "/home/itdirect-ai/Desktop/VAS/secrets/sql_agent_db_password",
+          "/run/secrets/sql_agent_db_password",
+          false
+        ]
+      ],
+      "state": "deployed_verified"
+    }
+  ]
+}

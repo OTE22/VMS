@@ -134,7 +134,7 @@ test('missing-schema early return has the full shape the submit handler destruct
     const ctx = ctxWith({});
     const r = vm.runInContext("collectFrameSourceConfigFromSchema('unknown_type')", ctx);
     assert.deepEqual(Object.keys(r).sort(), ['config', 'isValid', 'missingFields', 'requiredFields']);
-    assert.equal(r.isValid, true);
+    assert.equal(r.isValid, false);
 });
 
 test('populateFrameSourceConfig hands local media to the picker via pendingSource (relative wins, legacy read-only)', () => {

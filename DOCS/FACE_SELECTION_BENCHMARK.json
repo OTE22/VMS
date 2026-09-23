@@ -1,0 +1,31 @@
+{
+  "video": "20260916_050557_in_video.mp4",
+  "sampled_frames": 132,
+  "seconds": 26.359666666666666,
+  "observations": 438,
+  "methods": {
+    "baseline": {
+      "captures": 22,
+      "reasons": {
+        "usable": 10,
+        "no_face": 11,
+        "insufficient_source_coverage": 1
+      },
+      "tracks_with_usable_capture": 4,
+      "missed_opportunity_tracks": 0,
+      "captures_if_usable_faces_commit": 14
+    },
+    "quality": {
+      "captures": 21,
+      "reasons": {
+        "usable": 9,
+        "no_face": 11,
+        "landmarks_outside_source": 1
+      },
+      "tracks_with_usable_capture": 4,
+      "missed_opportunity_tracks": 0,
+      "captures_if_usable_faces_commit": 13
+    }
+  },
+  "tracks_with_usable_face_opportunity": 4
+}

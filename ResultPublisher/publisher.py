@@ -200,6 +200,7 @@ class ResultPublisher:
             "rate_limited_destinations": [],
             "skipped_destinations": [],
             "errors": {},
+            "processing_outcomes": {},
             "attempted": 0,
             "retry_after": None,
         }
@@ -255,6 +256,7 @@ class ResultPublisher:
             status = outcome.get("status")
             if status == "success":
                 result["successful_destinations"].append(dest_id)
+                result['processing_outcomes'][dest_id] = outcome.get('outcome')
             elif status == "rate_limited":
                 result["rate_limited_destinations"].append(dest_id)
             elif status in ("disabled", "paused", "unconfigured"):

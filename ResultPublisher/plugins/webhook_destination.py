@@ -222,6 +222,15 @@ def _classify_status(response) -> DeliveryResult:
             error=f"HTTP {status}", retry_after=retry_after)
 
     if 200 <= status < 300:
+        try:
+            feedback = response.json().get('processing_status')
+        except (ValueError, AttributeError):
+            feedback = None
+        if feedback == 'pending':
+            return _r('PROCESSING_PENDING', retryable=True, retry_after=2.0)
+        if feedback in ('saved', 'no_face', 'quality_rejected', 'duplicate',
+                        'invalid_image', 'failed', 'ignored'):
+            return DeliveryResult(success=True, outcome='FACE_' + feedback.upper())
         return DeliveryResult.ok()
     if status in (401, 403):
         return _r("AUTH_FAILED", disable=True)

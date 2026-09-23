@@ -715,6 +715,7 @@
                                 <button type="button" class="btn btn-primary" onclick="addDestination()">
                                     <i class="fas fa-plus me-1"></i>Add Destination
                                 </button>
+                                <button type="button" id="destinationCancelButton" class="btn btn-outline-secondary ms-2" onclick="cancelDestinationEdit()" hidden>Cancel Destination</button>
                             </div>
                         </div>
                         
@@ -889,6 +890,7 @@
 <script>
 let currentDestinations = [];
 let availableModels = [];
+let pipelineSavePending = false;
 let editingPipelineId = null; // Track if we're editing a pipeline
 let allPipelines = {}; // Store all pipeline data for editing
 let availableDevices = []; // Store available hardware devices
@@ -1628,6 +1630,10 @@ let activeTestSourceId = null;
 
 // Test Frame Source function
 async function testFrameSource() {
+    if (activeTestSourceId) {
+        await stopTestSource();
+        if (activeTestSourceId) return;
+    }
     const sourceType = document.getElementById('frameSourceType').value;
     
     if (!sourceType) {
@@ -1662,16 +1668,15 @@ async function testFrameSource() {
                 config: config
             },
             model: {
-                engine_type: 'pass'
-            },
-            inference: {
-                enabled: false,
+                engine_type: 'pass',
                 device: 'cpu'
             },
+            inference_enabled: false,
+            source_pipeline_id: editingPipelineId || undefined,
             destinations: []
         };
         
-        console.log('Creating test pipeline with config:', testConfig);
+        // Credentials stay out of the browser console.
         
         // Create the test pipeline
         const createResponse = await fetch('/api/pipeline/create', {
@@ -1719,7 +1724,6 @@ async function testFrameSource() {
         // Clean up if pipeline was created
         if (activeTestSourceId) {
             await stopTestSource();
-            activeTestSourceId = null;
         }
     } finally {
         testSourceBtn.innerHTML = originalHtml;
@@ -1753,75 +1757,29 @@ function showTestSourceModal(sourceType, pipelineId) {
 
 // Stop test source
 async function stopTestSource() {
-    if (!activeTestSourceId) {
-        return;
-    }
-    
+    if (!activeTestSourceId) return;
     const pipelineId = activeTestSourceId;
-    activeTestSourceId = null; // Clear immediately to prevent double-stop
-    
     const stopBtn = document.getElementById('stopTestSourceBtn');
-    if (!stopBtn) {
-        // Button might not exist if called during cleanup
-        await cleanupTestPipeline(pipelineId);
-        return;
-    }
-    
-    const originalHtml = stopBtn.innerHTML;
-    
-    stopBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Stopping...';
-    stopBtn.disabled = true;
-    
+    if (stopBtn?.disabled) return;
+    if (stopBtn) stopBtn.disabled = true;
     try {
         await cleanupTestPipeline(pipelineId);
-        
-        // Close modal if open
+        if (activeTestSourceId === pipelineId) activeTestSourceId = null;
         const modal = bootstrap.Modal.getInstance(document.getElementById('testSourceModal'));
-        if (modal) {
-            modal.hide();
-        }
-        
-        console.log('Test source stopped and cleaned up');
-        
+        if (modal) modal.hide();
     } catch (error) {
-        console.error('Error stopping test source:', error);
-        // Continue anyway to clean up UI state
+        showAlert('error', 'Test source cleanup failed. Click Stop again or Test Source to retry.');
     } finally {
-        if (stopBtn) {
-            stopBtn.innerHTML = originalHtml;
-            stopBtn.disabled = false;
-        }
+        if (stopBtn) stopBtn.disabled = false;
     }
 }
 
-// Helper function to cleanup test pipeline
 async function cleanupTestPipeline(pipelineId) {
-    try {
-        // Try to stop the pipeline first
-        const stopResponse = await fetch(`/api/pipeline/${pipelineId}/stop`, {
-            method: 'POST'
-        });
-        
-        if (!stopResponse.ok) {
-            console.warn('Failed to stop test pipeline, attempting delete anyway');
-        }
-        
-        // Small delay to allow pipeline to stop gracefully
-        await new Promise(resolve => setTimeout(resolve, 200));
-        
-        // Delete the test pipeline
-        const deleteResponse = await fetch(`/api/pipeline/${pipelineId}`, {
-            method: 'DELETE'
-        });
-        
-        if (!deleteResponse.ok) {
-            console.warn('Failed to delete test pipeline:', pipelineId);
-        }
-        
-    } catch (error) {
-        console.error('Error during test pipeline cleanup:', error);
-        // Don't throw - we want to continue cleanup even if this fails
-    }
+    // Deletion also handles stopping; still attempt it if the stop request fails.
+    try { await fetch(`/api/pipeline/${pipelineId}/stop`, {method: 'POST'}); }
+    catch (error) { /* A failed stop must not prevent the deletion attempt. */ }
+    const response = await fetch(`/api/pipeline/${pipelineId}`, {method: 'DELETE'});
+    if (!response.ok && response.status !== 404) throw new Error('Could not delete test pipeline');
 }
 
 // Collect frame source configuration data from form fields based on schema
@@ -1829,7 +1787,7 @@ function collectFrameSourceConfigFromSchema(sourceType) {
     const frameSourceType = availableFrameSourceTypes.find(ft => ft.type === sourceType);
     
     if (!frameSourceType || !frameSourceType.config_schema) {
-        return { config: {}, requiredFields: [], missingFields: [], isValid: true };
+        return { config: {}, requiredFields: [], missingFields: ['Source configuration unavailable; reload the page'], isValid: false };
     }
     
     const config = {};
@@ -1841,6 +1799,7 @@ function collectFrameSourceConfigFromSchema(sourceType) {
         const element = document.getElementById(field.name);
         
         if (!element) {
+            if (field.required) missingFields.push(field.label || field.name);
             console.warn(`Frame source config field element not found: ${field.name}`);
             continue;
         }
@@ -1872,7 +1831,7 @@ function collectFrameSourceConfigFromSchema(sourceType) {
         // Handle required fields
         if (field.required) {
             requiredFields.push(field.name);
-            if (value === undefined || value === '') {
+            if (value === undefined || value === null || value === '') {
                 missingFields.push(field.label || field.name);
             }
         }
@@ -2394,6 +2353,8 @@ untouched (or blank) keeps the stored value.">
 function updateDestinationConfig() {
     const destType = document.getElementById('destinationType').value;
     const configDiv = document.getElementById('destinationConfig');
+    const cancelButton = document.getElementById('destinationCancelButton');
+    if (cancelButton) cancelButton.hidden = !destType;
     
     if (!destType) {
         configDiv.innerHTML = '<div class="text-muted">Select a destination type to configure</div>';
@@ -2531,6 +2492,7 @@ function addDestination() {
                 id: editingDestinationId,
                 type: destType,
                 config: config,
+                favorite_id: document.getElementById('favoriteConfigSelect').value || existingDestination.favorite_id || undefined,
                 enabled: existingDestination.enabled // Preserve enabled state when updating
             };
             showAlert('success', 'Destination updated successfully');
@@ -2555,7 +2517,7 @@ function addDestination() {
         // Remove cancel button
         const cancelButton = document.querySelector('button[onclick="cancelDestinationEdit()"]');
         if (cancelButton) {
-            cancelButton.remove();
+            cancelButton.hidden = true;
         }
     } else {
         // Add new destination
@@ -2563,6 +2525,7 @@ function addDestination() {
             id: 'dest_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9), // Generate a more unique ID
             type: destType,
             config: config,
+            favorite_id: document.getElementById('favoriteConfigSelect').value || undefined,
             enabled: true // New destinations are enabled by default
         };
         
@@ -2573,6 +2536,7 @@ function addDestination() {
     updateDestinationsList();
     
     // Clear the form
+    document.getElementById('favoriteConfigSelect').value = '';
     document.getElementById('destinationType').value = '';
     updateDestinationConfig();
     
@@ -2625,7 +2589,7 @@ function updateDestinationsList() {
             // Use neutral/colorless badges
             const badgeClass = 'badge bg-light text-dark border';
             
-            return `<span class="${badgeClass} me-1 mb-1">${displayKey}: ${displayValue}</span>`;
+            return `<span class="${badgeClass} me-1 mb-1">${escapeBuilderText(displayKey)}: ${escapeBuilderText(/password|secret|token|api.?key/i.test(key) ? "***" : displayValue)}</span>`;
         });
         
         return `<div class="d-flex flex-wrap">${configItems.join('')}</div>`;
@@ -2639,7 +2603,7 @@ function updateDestinationsList() {
             <div class="alert alert-info d-flex justify-content-between align-items-start py-2">
                 <div style="flex: 1;">
                     <div class="d-flex align-items-center mb-2">
-                        <strong class="me-2">${dest.type.toUpperCase()}</strong>
+                        <strong class="me-2">${escapeBuilderText(dest.type.toUpperCase())}</strong>
                         <label class="destination-toggle ms-auto me-2" title="Enable/Disable this destination">
                             <input type="checkbox" 
                                    ${enabledState ? 'checked' : ''}
@@ -2788,7 +2752,7 @@ function cancelDestinationEdit() {
     // Remove cancel button
     const cancelButton = document.querySelector('button[onclick="cancelDestinationEdit()"]');
     if (cancelButton) {
-        cancelButton.remove();
+        cancelButton.hidden = true;
     }
     
     // Re-enable all edit buttons
@@ -2796,6 +2760,7 @@ function cancelDestinationEdit() {
     
     // Clear the form
     document.getElementById('destinationType').value = '';
+    document.getElementById('favoriteConfigSelect').value = '';
     updateDestinationConfig();
     
     // Clear destination type selector visual state
@@ -2928,7 +2893,7 @@ function updateModelInfo() {
     if (model.description && model.description.trim() !== '') {
         infoDiv.innerHTML = `
             <div class="alert alert-light py-2">
-                ${model.description}
+                ${escapeBuilderText(model.description)}
             </div>
         `;
     } else {
@@ -3009,8 +2974,8 @@ async function loadAvailableModels() {
                 
                 button.innerHTML = `
                     <div class="icon"><i class="fas ${engineIcon}"></i></div>
-                    <div class="label" ${hasCustomName ? `title="File: ${model.original_filename}"` : ''}>${displayName}</div>
-                    <div class="description">${model.engine_type} • ${fileSizeMB}MB</div>
+                    <div class="label" ${hasCustomName ? `title="File: ${escapeBuilderText(model.original_filename)}"` : ''}>${escapeBuilderText(displayName)}</div>
+                    <div class="description">${escapeBuilderText(model.engine_type)} • ${fileSizeMB}MB</div>
                 `;
                 
                 selector.appendChild(button);
@@ -3072,6 +3037,7 @@ function selectBestAvailableEngine(preferredEngine = 'ultralytics') {
 
 // Load pipeline templates
 function loadTemplate(templateName) {
+    if (pipelineSavePending) return;
     switch (templateName) {
         case 'webcam_detection':
             document.getElementById('pipelineName').value = 'Webcam Object Detection';
@@ -3147,6 +3113,11 @@ function loadTemplate(templateName) {
 // Pipeline form submission
 document.getElementById('pipelineForm').addEventListener('submit', async function(e) {
     e.preventDefault();
+    if (pipelineSavePending) return;
+    if (editingDestinationId || document.getElementById('destinationType').value) {
+        showAlert('warning', 'Apply the destination with Add/Update Destination, or cancel it before saving.');
+        return;
+    }
     if (document.getElementById('pipelineForm').dataset?.uploadInProgress === 'true') {
         showAlert('warning', 'Please wait for the video upload to finish.');
         return;
@@ -3197,12 +3168,17 @@ document.getElementById('pipelineForm').addEventListener('submit', async functio
         return;
     }
     
+    const savedEditingId = editingPipelineId;
+    pipelineSavePending = true;
+    const controls = Array.from(document.querySelectorAll('#pipelineForm input, #pipelineForm select, #pipelineForm textarea, #pipelineForm button, #submitButton, #resetButton'));
+    const disabledStates = controls.map(control => control.disabled);
+    controls.forEach(control => { control.disabled = true; });
     try {
         let response, result;
         
-        if (editingPipelineId) {
+        if (savedEditingId) {
             // Update existing pipeline
-            response = await fetch(`/api/pipeline/${editingPipelineId}`, {
+            response = await fetch(`/api/pipeline/${savedEditingId}`, {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json'
@@ -3223,22 +3199,29 @@ document.getElementById('pipelineForm').addEventListener('submit', async functio
         result = await response.json();
         
         if (response.ok) {
-            const action = editingPipelineId ? 'updated' : 'created';
+            const action = savedEditingId ? 'updated' : 'created';
             // Consume the canonical server response ({pipeline_id, status, message}) and
             // re-fetch: the list is authoritative server state, never a client guess.
-            const savedId = result.pipeline_id || editingPipelineId;
-            showAlert('success', `Pipeline "${pipelineConfig.name}" ${action} successfully (${String(savedId).slice(0, 8)}…)`);
+            const savedId = result.pipeline_id || savedEditingId;
+            showAlert('success', `Pipeline "${escapeBuilderText(pipelineConfig.name)}" ${action} successfully (${String(savedId).slice(0, 8)}…)`);
             resetForm(true); // Skip confirmation dialog after successful save/update
             await refreshPipelines();
         } else {
-            const action = editingPipelineId ? 'update' : 'create';
+            const action = savedEditingId ? 'update' : 'create';
             showAlert('error', `Failed to ${action} pipeline: ${result.error}`);
         }
     } catch (error) {
-        const action = editingPipelineId ? 'updating' : 'creating';
+        const action = savedEditingId ? 'updating' : 'creating';
         showAlert('error', `Error ${action} pipeline: ${error.message}`);
+    } finally {
+        pipelineSavePending = false;
+        controls.forEach((control, index) => { control.disabled = disabledStates[index]; });
     }
 });
+
+document.getElementById('pipelineForm').addEventListener('click', function(event) {
+    if (pipelineSavePending) { event.preventDefault(); event.stopImmediatePropagation(); }
+}, true);
 
 // Get frame source configuration
 function getFrameSourceConfig() {
@@ -3263,6 +3246,7 @@ function getFrameSourceConfig() {
 
 // Edit pipeline
 async function editPipeline(pipelineId) {
+    if (pipelineSavePending) return;
     try {
         // Get the pipeline data
         const pipeline = allPipelines[pipelineId];
@@ -3283,6 +3267,7 @@ async function editPipeline(pipelineId) {
         // selector rebuild (a late /api/hardware blanked the device; a late /api/models
         // made selectModel throw). No timers - real completion.
         await (window.__loadersReady || Promise.resolve());
+        if (pipelineSavePending) return;
 
         // Set edit mode
         editingPipelineId = pipelineId;
@@ -3347,7 +3332,7 @@ async function editPipeline(pipelineId) {
         
     // No automatic scroll: keep user's viewport stable when entering edit mode
         
-        showAlert('info', `Editing pipeline: ${pipeline.name}`);
+        showAlert('info', `Editing pipeline: ${escapeBuilderText(pipeline.name)}`);
         
     } catch (error) {
         showAlert('error', `Error loading pipeline for editing: ${error.message}`);
@@ -3356,6 +3341,7 @@ async function editPipeline(pipelineId) {
 
 // Cancel edit via the top Cancel button: immediately exit edit mode without confirmation
 function cancelEdit() {
+    if (pipelineSavePending) return;
     // If not editing, behave like reset without confirmation
     if (editingPipelineId === null) {
         resetForm(false);
@@ -3432,6 +3418,7 @@ function populateFrameSourceConfig(frameSource) {
 
 // Reset form
 function resetForm(skipConfirmation = false) {
+    if (pipelineSavePending && !skipConfirmation) return;
     const isEditing = editingPipelineId !== null;
     
     if (!skipConfirmation) {
@@ -3473,7 +3460,7 @@ function resetForm(skipConfirmation = false) {
     // Remove cancel button if it exists
     const cancelButton = document.querySelector('button[onclick="cancelDestinationEdit()"]');
     if (cancelButton) {
-        cancelButton.remove();
+        cancelButton.hidden = true;
     }
     
     // Re-enable all edit buttons
@@ -3500,6 +3487,7 @@ function resetForm(skipConfirmation = false) {
 
 // Import pipeline function
 function importPipeline() {
+    if (pipelineSavePending) return;
     const fileInput = document.getElementById('pipelineImportInput');
     
     // Set up event listener for file selection
@@ -3530,7 +3518,7 @@ function importPipeline() {
             const result = await response.json();
             
             if (response.ok) {
-                showAlert('success', `Pipeline "${result.pipeline_name}" imported successfully`);
+                showAlert('success', `Pipeline "${escapeBuilderText(result.pipeline_name)}" imported successfully`);
                 
                 // Check if we want to edit the imported pipeline
                 const editImported = confirm(`Pipeline imported successfully! Would you like to edit it now?`);
@@ -3577,6 +3565,10 @@ async function refreshPipelines() {
     }
 }
 
+function escapeBuilderText(value) {
+    return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
+}
+
 // Update pipelines list display
 function updatePipelinesList(pipelines) {
     const listDiv = document.getElementById('availablePipelines');
@@ -3599,10 +3591,10 @@ function updatePipelinesList(pipelines) {
             <div class="card-body p-2">
                 <div class="d-flex justify-content-between align-items-start">
                     <div>
-                        <h6 class="card-title mb-1">${pipeline.name}</h6>
+                        <h6 class="card-title mb-1">${escapeBuilderText(pipeline.name)}</h6>
                         <small class="text-muted">
-                            ${pipeline.frame_source?.capture_type || pipeline.frame_source?.type || 'Unknown'} → ${pipeline.model?.engine_type || 'Unknown'}<br>
-                            Status: <span class="badge bg-${pipeline.status === 'running' ? 'success' : 'secondary'}">${pipeline.status}</span>
+                            ${escapeBuilderText(pipeline.frame_source?.capture_type || pipeline.frame_source?.type || 'Unknown')} → ${escapeBuilderText(pipeline.model?.engine_type || 'Unknown')}<br>
+                            Status: <span class="badge bg-${pipeline.status === 'running' ? 'success' : 'secondary'}">${escapeBuilderText(pipeline.status)}</span>
                         </small>
                     </div>
                     <div class="btn-group-horizontal btn-group-sm">
@@ -3789,7 +3781,7 @@ async function exportPipeline(pipelineId) {
         document.body.removeChild(a);
         window.URL.revokeObjectURL(url);
         
-        showAlert('success', `Pipeline "${pipeline.name}" exported successfully`);
+        showAlert('success', `Pipeline "${escapeBuilderText(pipeline.name)}" exported successfully`);
         
     } catch (error) {
         showAlert('error', `Error exporting pipeline: ${error.message}`);
@@ -3914,8 +3906,8 @@ function updatePipelineFavoritesSelector() {
         
         button.innerHTML = `
             <div class="icon"><i class="${destinationIcon}"></i></div>
-            <div class="label">${fav.name}</div>
-            <div class="description">${fav.type.toUpperCase()} Configuration</div>
+            <div class="label">${escapeBuilderText(fav.name)}</div>
+            <div class="description">${escapeBuilderText(fav.type.toUpperCase())} Configuration</div>
         `;
         
         selector.appendChild(button);
@@ -3948,11 +3940,8 @@ function loadFavoriteInPipeline() {
     // Update the destination configuration form for this type
     updateDestinationConfig();
     
-    // Wait a bit for the form to render, then populate it
-    setTimeout(() => {
-        populatePipelineDestinationForm(favorite.type, favorite.config);
-        showAlert('success', `Loaded favorite: ${favorite.name}`);
-    }, 100);
+    populatePipelineDestinationForm(favorite.type, favorite.config);
+    showAlert('success', `Loaded favorite: ${escapeBuilderText(favorite.name)}`);
 }
 
 // Populate destination form in pipeline with favorite data
@@ -4338,6 +4327,7 @@ async function handleFileUpload(fileInput) {
         if (!file || fileInput.disabled) return;
         const targetField = document.getElementById(targetFieldName);
         const form = document.getElementById('pipelineForm');
+        form.dataset.pendingUploads = String(Number(form.dataset.pendingUploads || 0) + 1);
         form.dataset.uploadInProgress = 'true';
         fileInput.disabled = true;
         uploadBtn.disabled = true;
@@ -4384,7 +4374,8 @@ async function handleFileUpload(fileInput) {
             uploadBtn.disabled = false;
         } finally {
             fileInput.disabled = false;
-            delete form.dataset.uploadInProgress;
+            form.dataset.pendingUploads = String(Math.max(0, Number(form.dataset.pendingUploads || 1) - 1));
+            if (form.dataset.pendingUploads === '0') delete form.dataset.uploadInProgress;
         }
     };
 }

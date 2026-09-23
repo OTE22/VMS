@@ -67,14 +67,16 @@ function handler(pageName, form, values) {
     let submit;
     const sent=[];
     const elements=Object.fromEntries(Object.entries(values).map(([k,v])=>[k,typeof v==='boolean'?{checked:v}:{value:v}]));
+    elements.destinationType = {value:''};
     elements[form]={addEventListener:(_,f)=>{submit=f;}};
-    const ctx=vm.createContext({document:{getElementById:id=>elements[id]},
+    const ctx=vm.createContext({document:{getElementById:id=>elements[id],querySelectorAll:()=>[]},
         fetch:async(url,options)=>{sent.push({url,...options});return {ok:true,json:async()=>({pipeline_id:'new-id'})};},
         showAlert(){},startTelemetryUpdates(){}, resetForm(){},refreshPipelines:async()=>{},
         getFrameSourceConfig:()=>({source:'rtsp://camera.invalid/live',buffer_size:0}),
         collectFrameSourceConfigFromSchema:()=>({isValid:true,missingFields:[]}),
     });
-    vm.runInContext('var editingPipelineId=null; var currentDestinations=[{type:"null",config:{},enabled:false}];',ctx);
+    vm.runInContext('var pipelineSavePending=false; var editingDestinationId=null; var editingPipelineId=null; var currentDestinations=[{type:"null",config:{},enabled:false}];',ctx);
+    if (pageName === 'pipeline_builder') vm.runInContext(fn(source, 'escapeBuilderText'), ctx);
     vm.runInContext(script,ctx);
     return {submit:()=>submit({preventDefault(){}}),sent,ctx};
 }

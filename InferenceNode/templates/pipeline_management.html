@@ -824,6 +824,9 @@ let availableEngineTypes = []; // Track available inference engines
 
 // Load and refresh pipelines
 async function refreshPipelines(preservePreviews = false) {
+    if (pendingPipelineControls.size) return;
+    const requestSequence = ++pipelineRefreshSequence;
+    const stateVersion = managementStateVersion;
     // Save current preview state if preserving
     let savedPreviews = new Set();
     if (preservePreviews) {
@@ -840,8 +843,10 @@ async function refreshPipelines(preservePreviews = false) {
         if (MY_NODE_ID === undefined) { await loadNodeIdentity(); }
         const response = await fetch('/api/pipelines');
         const data = await response.json();
+        if (requestSequence !== pipelineRefreshSequence || stateVersion !== managementStateVersion) return;
         
         if (response.ok) {
+            managementStateVersion++;
             allPipelines = data.pipelines || [];
             
             if (preservePreviews) {
@@ -851,12 +856,13 @@ async function refreshPipelines(preservePreviews = false) {
                 filterPipelines();
             }
         } else {
-            showAlert('error', 'Failed to load pipelines: ' + data.error);
-            allPipelines = [];
+            showManagementAlert('error', 'Failed to load pipelines: ' + data.error);
+
         }
     } catch (error) {
-        showAlert('error', 'Error loading pipelines: ' + error.message);
-        allPipelines = [];
+        if (requestSequence !== pipelineRefreshSequence || stateVersion !== managementStateVersion) return;
+        showManagementAlert('error', 'Error loading pipelines: ' + error.message);
+
     } finally {
         if (!preservePreviews) {
             document.getElementById('loadingIndicator').style.display = 'none';
@@ -910,7 +916,7 @@ function updatePipelineData(savedPreviews) {
         
         const matchesSource = sourceFilters.length === 0 || 
             sourceFilters.some(source => 
-                (pipeline.frame_source?.capture_type || pipeline.frame_source?.type || '').toLowerCase().includes(source)
+                matchesSourceCategory(pipeline, source)
             );
         
         const matchesDestination = destinationFilters.length === 0 || 
@@ -925,7 +931,7 @@ function updatePipelineData(savedPreviews) {
         
         const matchesHardware = hardwareFilters.length === 0 || 
             (pipeline.model && pipeline.model.device && 
-             hardwareFilters.some(hardware => pipeline.model.device.toLowerCase().includes(hardware)));
+             hardwareFilters.some(hardware => matchesHardwareCategory(pipeline.model.device, hardware)));
         
         return matchesSearch && matchesStatus && matchesEngine && matchesSource && matchesDestination && matchesHardware;
     });
@@ -1036,7 +1042,7 @@ function updatePipelineUI(pipeline, savedPreviews) {
         const inferenceToggle = cardElement.querySelector('.inference-toggle input');
         if (inferenceToggle) {
             inferenceToggle.checked = (pipeline.inference_enabled === true || pipeline.inference_enabled === undefined);
-            inferenceToggle.disabled = pipeline.status !== 'running';
+            inferenceToggle.disabled = controlsDisabled(pipeline);
         }
         
         // Update preview toggle switch in card view - DISABLED (preview toggles are hidden)
@@ -1067,25 +1073,9 @@ function updatePipelineUI(pipeline, savedPreviews) {
             listStatusBadge.textContent = capitalizeStatus(pipeline.status);
         }
         
-        // Update inference toggle switch in list view
+        // Show saved inference settings for stopped and running pipelines.
         const inferenceCell = rowElement.querySelector('td:nth-child(3)');
-        if (inferenceCell) {
-            if (pipeline.status === 'running') {
-                const isInferenceEnabled = (pipeline.inference_enabled === true || pipeline.inference_enabled === undefined);
-                inferenceCell.innerHTML = `
-                    <div class="d-flex align-items-center justify-content-center">
-                        <label class="inference-toggle compact">
-                            <input type="checkbox" 
-                                   ${isInferenceEnabled ? 'checked' : ''} 
-                                   onchange="toggleInference('${pipeline.id}', this.checked)">
-                            <span class="inference-slider"></span>
-                        </label>
-                    </div>
-                `;
-            } else {
-                inferenceCell.innerHTML = '<span class="text-muted">-</span>';
-            }
-        }
+        if (inferenceCell) inferenceCell.innerHTML = inferenceControl(pipeline);
         
         // Update preview toggle switch in list view - DISABLED (preview toggles are hidden)
         /*
@@ -1164,13 +1154,13 @@ function setButtonLoadingState(pipelineId, isLoading, loadingText = 'Starting...
 
 // Update a single pipeline's state without full refresh (prevents scrolling and preview interruption)
 function updateSinglePipelineState(pipelineId, newStatus) {
+    managementStateVersion++;
     // Find the pipeline in our current data
     const pipeline = allPipelines.find(p => p.id === pipelineId);
     if (!pipeline) return;
     
     // Update the pipeline status in our local data
     pipeline.status = newStatus;
-    pipeline.inference_enabled = newStatus === 'running' ? pipeline.inference_enabled : false;
     
     // Stop preview streams for non-running pipelines (stopped or error)
     if (newStatus !== 'running' && activePreviews.has(pipelineId)) {
@@ -1223,17 +1213,8 @@ function updateSinglePipelineState(pipelineId, newStatus) {
             }
         }
         
-        // Update inference toggle switch state (always visible, enable/disable based on status)
-        const inferenceToggle = cardElement.querySelector('.inference-toggle input');
-        if (inferenceToggle) {
-            if (newStatus === 'running') {
-                inferenceToggle.disabled = false;
-                inferenceToggle.checked = (pipeline.inference_enabled === true || pipeline.inference_enabled === undefined);
-            } else {
-                inferenceToggle.disabled = true;
-                inferenceToggle.checked = (newStatus === 'starting') ? (pipeline.inference_enabled === true || pipeline.inference_enabled === undefined) : false;
-            }
-        }
+        // Preserve saved values while stopped; only transitions/saves lock controls.
+        syncPipelineControls(pipelineId);
         
         // Update preview toggle switch state - DISABLED (preview toggles are hidden)
         /*
@@ -1256,18 +1237,6 @@ function updateSinglePipelineState(pipelineId, newStatus) {
             }
         }
         */
-        
-        // Update destination toggle switches state (enable/disable based on status)
-        const destinationToggles = cardElement.querySelectorAll('.destination-toggle-small input');
-        if (destinationToggles) {
-            destinationToggles.forEach(toggle => {
-                if (newStatus === 'running') {
-                    toggle.disabled = false;
-                } else {
-                    toggle.disabled = true;
-                }
-            });
-        }
         
         // Reset metrics when pipeline stops (but not during starting)
         if (newStatus !== 'running' && newStatus !== 'starting') {
@@ -1293,34 +1262,9 @@ function updateSinglePipelineState(pipelineId, newStatus) {
             listStatusBadge.textContent = capitalizeStatus(newStatus);
         }
         
-        // Update inference cell with toggle switch
+        // Show saved inference settings for stopped and running pipelines.
         const inferenceCell = rowElement.querySelector('td:nth-child(3)');
-        if (inferenceCell) {
-            if (newStatus === 'running') {
-                const isInferenceEnabled = (pipeline.inference_enabled === true || pipeline.inference_enabled === undefined);
-                inferenceCell.innerHTML = `
-                    <label class="inference-toggle compact">
-                        <input type="checkbox" 
-                               ${isInferenceEnabled ? 'checked' : ''} 
-                               onchange="toggleInference('${pipelineId}', this.checked)">
-                        <span class="inference-slider"></span>
-                    </label>
-                `;
-            } else if (newStatus === 'starting') {
-                const isInferenceEnabled = (pipeline.inference_enabled === true || pipeline.inference_enabled === undefined);
-                inferenceCell.innerHTML = `
-                    <label class="inference-toggle compact">
-                        <input type="checkbox" 
-                               ${isInferenceEnabled ? 'checked' : ''} 
-                               disabled
-                               onchange="toggleInference('${pipelineId}', this.checked)">
-                        <span class="inference-slider"></span>
-                    </label>
-                `;
-            } else {
-                inferenceCell.innerHTML = '<span class="text-muted">-</span>';
-            }
-        }
+        if (inferenceCell) inferenceCell.innerHTML = inferenceControl(pipeline);
         
         // Update preview cell with toggle switch - DISABLED (preview toggles are hidden)
         /*
@@ -1552,6 +1496,8 @@ function updateHoverOverlays(pipelineId, status) {
 
 // Update real-time metrics for running pipelines
 async function updatePipelineMetrics() {
+    if (metricsPending) return;
+    metricsPending = true;
     try {
         // Use the lightweight metrics endpoint instead of full pipeline data
         const response = await fetch('/api/pipelines/metrics');
@@ -1625,14 +1571,20 @@ async function updatePipelineMetrics() {
         }
     } catch (error) {
         console.warn('Failed to update pipeline metrics:', error);
+    } finally {
+        metricsPending = false;
     }
 }
 
 // Update publisher states for a specific pipeline
 async function updatePublisherStates(pipelineId) {
+    if (pendingPublisherPolls.has(pipelineId) || pendingPipelineControls.has(pipelineId)) return;
+    pendingPublisherPolls.add(pipelineId);
+    const stateVersion = managementStateVersion;
     try {
         const response = await fetch(`/api/pipeline/${pipelineId}/publishers/status`);
         const data = await response.json();
+        if (stateVersion !== managementStateVersion || pendingPipelineControls.has(pipelineId)) return;
         
         if (response.ok && data.publishers) {
             // Update local pipeline data with enhanced states
@@ -1657,11 +1609,14 @@ async function updatePublisherStates(pipelineId) {
         }
     } catch (error) {
         console.warn(`Failed to update publisher states for pipeline ${pipelineId}:`, error);
+    } finally {
+        pendingPublisherPolls.delete(pipelineId);
     }
 }
 
 // Update publisher UI for a specific pipeline
 function updatePipelinePublisherUI(pipelineId, pipeline) {
+    pipeline = managementDisplayData(pipeline);
     const cardElement = document.querySelector(`[data-pipeline-id="${pipelineId}"]`);
     if (!cardElement) return;
     
@@ -1681,7 +1636,7 @@ function updatePipelinePublisherUI(pipelineId, pipeline) {
                 statusText = 'Auto-Disabled';
                 statusClass = 'text-danger';
                 statusIcon = '<i class="fas fa-exclamation-triangle me-1"></i>';
-                toggleEnabled = false;
+                toggleEnabled = true;
                 toggleChecked = false;
             } else if (dest.is_paused) {
                 // Paused state - toggle OFF but remains enabled (clickable)
@@ -1719,10 +1674,13 @@ function updatePipelinePublisherUI(pipelineId, pipeline) {
                     </div>
                 </div>
                 <div class="d-flex align-items-center gap-1">
+                    ${dest.auto_disabled ? `<button class="btn btn-sm btn-outline-warning publisher-retry"
+                        ${controlsDisabled(pipeline) ? 'disabled' : ''}
+                        onclick="togglePublisher('${pipeline.id}', '${dest.id}', true)">Retry / Re-enable</button>` : ''}
                     <label class="destination-toggle-small ${dest.is_paused ? 'paused' : ''} ms-1">
                         <input type="checkbox" 
-                               ${toggleChecked ? 'checked' : ''}
-                               ${pipeline.status !== 'running' || !toggleEnabled ? 'disabled' : ''}
+                               data-publisher-id="${dest.id}" ${toggleChecked ? 'checked' : ''}
+                               ${controlsDisabled(pipeline) ? 'disabled' : ''}
                                onchange="togglePublisher('${pipeline.id}', '${dest.id}', this.checked)">
                         <span class="destination-slider-small"></span>
                     </label>
@@ -1831,6 +1789,17 @@ function updateQuickFilterBadges() {
 }
 
 // Filter pipelines based on search and filters
+function matchesSourceCategory(pipeline, category) {
+    const type = (pipeline.frame_source?.capture_type || pipeline.frame_source?.type || '').toLowerCase();
+    return ['rtsp', 'ip_camera', 'ipcam'].includes(category)
+        ? ['rtsp', 'ip_camera', 'ipcam'].includes(type) : type.includes(category);
+}
+function matchesHardwareCategory(device, category) {
+    const value = String(device || '').toLowerCase();
+    if (category === 'gpu') return /gpu|cuda|tensorrt/.test(value);
+    if (category === 'npu') return /npu|myriad/.test(value);
+    return value.includes(category);
+}
 function filterPipelines() {
     console.log('=== FILTER PIPELINES CALLED ===');
     console.log('Active previews before filtering:', Array.from(activePreviews));
@@ -1896,7 +1865,7 @@ function filterPipelines() {
         
         const matchesSource = sourceFilters.length === 0 || 
             sourceFilters.some(source => 
-                (pipeline.frame_source?.capture_type || pipeline.frame_source?.type || '').toLowerCase().includes(source)
+                matchesSourceCategory(pipeline, source)
             );
         
         const matchesDestination = destinationFilters.length === 0 || 
@@ -1911,7 +1880,7 @@ function filterPipelines() {
         
         const matchesHardware = hardwareFilters.length === 0 || 
             (pipeline.model && pipeline.model.device && 
-             hardwareFilters.some(hardware => pipeline.model.device.toLowerCase().includes(hardware)));
+             hardwareFilters.some(hardware => matchesHardwareCategory(pipeline.model.device, hardware)));
         
         return matchesSearch && matchesStatus && matchesEngine && matchesSource && matchesDestination && matchesHardware;
     });
@@ -2132,6 +2101,7 @@ function renderCardView() {
     console.log('Full re-render of card view');
     
     const html = filteredPipelines.map(pipeline => {
+        pipeline = managementDisplayData(pipeline);
         const statusColor = getStatusColor(pipeline.status);
         const sourceInfo = getSourceInfo(pipeline);
         const modelInfo = getModelInfo(pipeline);
@@ -2164,7 +2134,7 @@ function renderCardView() {
                                 <li><a class="dropdown-item" href="#" onclick="editPipeline('${pipeline.id}')">
                                     <i class="fas fa-edit me-2"></i>Edit
                                 </a></li>
-                                <li><a class="dropdown-item" href="#" onclick="duplicatePipeline('${pipeline.id}')">
+                                <li><a class="dropdown-item" href="#" data-duplicate-id="${pipeline.id}" onclick="duplicatePipeline('${pipeline.id}')">
                                     <i class="fas fa-copy me-2"></i>Duplicate
                                 </a></li>
                                 <li><a class="dropdown-item" href="#" onclick="exportPipeline('${pipeline.id}')">
@@ -2210,7 +2180,7 @@ function renderCardView() {
                             <div id="${previewId}" class="preview-content position-absolute w-100 h-100" style="display: ${isPreviewActive ? 'block' : 'none'}; z-index: 2;">
                                 <img class="preview-stream w-100 h-100" style="height: 360px; object-fit: contain; border-radius: 4px; background-color: #1a1a1a;" />
                                 <div class="preview-overlay position-absolute top-0 end-0 p-1">
-                                    <button class="btn btn-sm btn-outline-light" onclick="openFullPreview('${pipeline.id}', '${pipeline.name}')" title="Full Screen">
+                                    <button class="btn btn-sm btn-outline-light" onclick="openFullPreview('${pipeline.id}')" title="Full Screen">
                                         <i class="fas fa-expand"></i>
                                     </button>
                                 </div>
@@ -2330,7 +2300,7 @@ function renderCardView() {
                                         statusText = 'Auto-Disabled';
                                         statusClass = 'text-danger';
                                         statusIcon = '<i class="fas fa-exclamation-triangle me-1"></i>';
-                                        toggleEnabled = false;
+                                        toggleEnabled = true;
                                         toggleChecked = false;
                                     } else if (dest.is_paused) {
                                         // Paused state - toggle OFF but remains enabled (clickable)
@@ -2368,10 +2338,13 @@ function renderCardView() {
                                             </div>
                                         </div>
                                         <div class="d-flex align-items-center gap-1">
-                                            <label class="destination-toggle-small ${dest.is_paused ? 'paused' : ''} ms-1">
+                                            ${dest.auto_disabled ? `<button class="btn btn-sm btn-outline-warning publisher-retry"
+                        ${controlsDisabled(pipeline) ? 'disabled' : ''}
+                        onclick="togglePublisher('${pipeline.id}', '${dest.id}', true)">Retry / Re-enable</button>` : ''}
+                    <label class="destination-toggle-small ${dest.is_paused ? 'paused' : ''} ms-1">
                                                 <input type="checkbox" 
-                                                       ${toggleChecked ? 'checked' : ''}
-                                                       ${pipeline.status !== 'running' || !toggleEnabled ? 'disabled' : ''}
+                                                       data-publisher-id="${dest.id}" ${toggleChecked ? 'checked' : ''}
+                                                       ${controlsDisabled(pipeline) ? 'disabled' : ''}
                                                        onchange="togglePublisher('${pipeline.id}', '${dest.id}', this.checked)">
                                                 <span class="destination-slider-small"></span>
                                             </label>
@@ -2398,7 +2371,7 @@ function renderCardView() {
                             <label class="inference-toggle">
                                 <input type="checkbox" 
                                        ${(pipeline.inference_enabled === true || pipeline.inference_enabled === undefined) ? 'checked' : ''} 
-                                       ${pipeline.status !== 'running' ? 'disabled' : ''}
+                                       ${controlsDisabled(pipeline) ? 'disabled' : ''}
                                        onchange="toggleInference('${pipeline.id}', this.checked)">
                                 <span class="inference-slider"></span>
                             </label>
@@ -2448,6 +2421,7 @@ function renderListView() {
     const tbody = document.getElementById('pipelineTableBody');
     
     const html = filteredPipelines.map(pipeline => {
+        pipeline = managementDisplayData(pipeline);
         const statusColor = getStatusColor(pipeline.status);
         const sourceInfo = getSourceInfo(pipeline);
         const modelInfo = getModelInfo(pipeline);
@@ -2466,16 +2440,7 @@ function renderListView() {
                 </td>
                 <td><span class="badge bg-${statusColor}">${capitalizeStatus(pipeline.status)}</span>${ownerBadge(pipeline)}</td>
                 <td>
-                    ${pipeline.status === 'running' ? `
-                        <div class="d-flex align-items-center justify-content-center">
-                            <label class="inference-toggle compact">
-                                <input type="checkbox" 
-                                       ${(pipeline.inference_enabled === true || pipeline.inference_enabled === undefined) ? 'checked' : ''} 
-                                       onchange="toggleInference('${pipeline.id}', this.checked)">
-                                <span class="inference-slider"></span>
-                            </label>
-                        </div>
-                    ` : '<span class="text-muted">-</span>'}
+                    ${inferenceControl(pipeline)}
                 </td>
                 <td>
                     <div>
@@ -2524,7 +2489,7 @@ function renderListView() {
                         <button class="btn btn-outline-secondary" onclick="editPipeline('${pipeline.id}')" title="Edit">
                             <i class="fas fa-edit"></i>
                         </button>
-                        <button class="btn btn-outline-secondary" onclick="duplicatePipeline('${pipeline.id}')" title="Duplicate">
+                        <button class="btn btn-outline-secondary" data-duplicate-id="${pipeline.id}" onclick="duplicatePipeline('${pipeline.id}')" title="Duplicate">
                             <i class="fas fa-copy"></i>
                         </button>
                         <button class="btn btn-outline-info" onclick="exportPipeline('${pipeline.id}')" title="Export">
@@ -2832,9 +2797,10 @@ function ownerBadge(pipeline) {
 
 // Pipeline actions
 async function startPipeline(pipelineId) {
+    managementStateVersion++;
     const owner = foreignOwner((allPipelines || []).find(p => p.id === pipelineId));
     if (owner) {
-        showAlert('error', `This pipeline runs on worker '${owner}'. Start it there, or reassign it first.`);
+        showManagementAlert('error', `This pipeline runs on worker '${owner}'. Start it there, or reassign it first.`);
         return;
     }
     // Show immediate loading feedback
@@ -2849,7 +2815,7 @@ async function startPipeline(pipelineId) {
         const result = await response.json();
         
         if (response.ok) {
-            showAlert('success', 'Pipeline started successfully');
+            showManagementAlert('success', 'Pipeline started successfully');
             
             // Keep pipeline in 'starting' state until we verify it's ready to stream
             // Poll the status endpoint to check if pipeline is truly running and has frames
@@ -2858,12 +2824,12 @@ async function startPipeline(pipelineId) {
             // Update statistics with a lightweight refresh that preserves other previews
             refreshPipelines(true);
         } else {
-            showAlert('error', `Failed to start pipeline: ${result.error}`);
+            showManagementAlert('error', `Failed to start pipeline: ${result.error}`);
             // Revert to stopped state on error
             updateSinglePipelineState(pipelineId, 'stopped');
         }
     } catch (error) {
-        showAlert('error', `Error starting pipeline: ${error.message}`);
+        showManagementAlert('error', `Error starting pipeline: ${error.message}`);
         // Revert to stopped state on error
         updateSinglePipelineState(pipelineId, 'stopped');
     } finally {
@@ -2874,6 +2840,7 @@ async function startPipeline(pipelineId) {
 
 // Start pipeline and automatically enable preview - used by play buttons
 async function startPipelineWithPreview(pipelineId) {
+    managementStateVersion++;
     // Show immediate loading feedback
     setButtonLoadingState(pipelineId, true, 'Starting...');
     updateSinglePipelineState(pipelineId, 'starting');
@@ -2886,7 +2853,7 @@ async function startPipelineWithPreview(pipelineId) {
         const result = await response.json();
         
         if (response.ok) {
-            showAlert('success', 'Pipeline started successfully');
+            showManagementAlert('success', 'Pipeline started successfully');
             
             // Keep pipeline in 'starting' state until we verify it's ready to stream
             // Poll the status endpoint to check if pipeline is truly running and has frames
@@ -2903,12 +2870,12 @@ async function startPipelineWithPreview(pipelineId) {
             // Update statistics with a lightweight refresh that preserves other previews
             refreshPipelines(true);
         } else {
-            showAlert('error', `Failed to start pipeline: ${result.error}`);
+            showManagementAlert('error', `Failed to start pipeline: ${result.error}`);
             // Revert to stopped state on error
             updateSinglePipelineState(pipelineId, 'stopped');
         }
     } catch (error) {
-        showAlert('error', `Error starting pipeline: ${error.message}`);
+        showManagementAlert('error', `Error starting pipeline: ${error.message}`);
         // Revert to stopped state on error
         updateSinglePipelineState(pipelineId, 'stopped');
     } finally {
@@ -2918,6 +2885,7 @@ async function startPipelineWithPreview(pipelineId) {
 }
 
 async function stopPipeline(pipelineId) {
+    managementStateVersion++;
     try {
         const response = await fetch(`/api/pipeline/${pipelineId}/stop`, {
             method: 'POST'
@@ -2926,7 +2894,7 @@ async function stopPipeline(pipelineId) {
         const result = await response.json();
         
         if (response.ok) {
-            showAlert('success', 'Pipeline stopped successfully');
+            showManagementAlert('success', 'Pipeline stopped successfully');
             
             // Gracefully stop preview for this specific pipeline
             if (activePreviews.has(pipelineId)) {
@@ -2957,14 +2925,15 @@ async function stopPipeline(pipelineId) {
             // Update statistics with a lightweight refresh that preserves other previews
             refreshPipelines(true);
         } else {
-            showAlert('error', `Failed to stop pipeline: ${result.error}`);
+            showManagementAlert('error', `Failed to stop pipeline: ${result.error}`);
         }
     } catch (error) {
-        showAlert('error', `Error stopping pipeline: ${error.message}`);
+        showManagementAlert('error', `Error stopping pipeline: ${error.message}`);
     }
 }
 
 async function deletePipeline(pipelineId) {
+    managementStateVersion++;
     if (confirm('Are you sure you want to delete this pipeline? This action cannot be undone.')) {
         try {
             const response = await fetch(`/api/pipeline/${pipelineId}`, {
@@ -2974,7 +2943,7 @@ async function deletePipeline(pipelineId) {
             const result = await response.json();
             
             if (response.ok) {
-                showAlert('success', 'Pipeline deleted successfully');
+                showManagementAlert('success', 'Pipeline deleted successfully');
                 
                 // Clean up preview state for deleted pipeline
                 if (activePreviews.has(pipelineId)) {
@@ -3007,10 +2976,10 @@ async function deletePipeline(pipelineId) {
                     document.getElementById('emptyState').style.display = 'block';
                 }
             } else {
-                showAlert('error', `Failed to delete pipeline: ${result.error}`);
+                showManagementAlert('error', `Failed to delete pipeline: ${result.error}`);
             }
         } catch (error) {
-            showAlert('error', `Error deleting pipeline: ${error.message}`);
+            showManagementAlert('error', `Error deleting pipeline: ${error.message}`);
         }
     }
 }
@@ -3021,6 +2990,10 @@ function editPipeline(pipelineId) {
 }
 
 async function duplicatePipeline(pipelineId) {
+    if (pendingDuplicates.has(pipelineId)) return;
+    pendingDuplicates.add(pipelineId);
+    const buttons = Array.from(document.querySelectorAll(`[data-duplicate-id="${pipelineId}"]`));
+    buttons.forEach(button => { button.disabled = true; button.classList.add('disabled'); });
     // Server-authoritative duplicate: POST /api/pipeline/<id>/duplicate. The server
     // clones the UNREDACTED stored definition (the old GET+POST clone here re-posted
     // sanitize_config()'s "***" as the real value and dropped inference_enabled), mints
@@ -3034,13 +3007,16 @@ async function duplicatePipeline(pipelineId) {
         const result = await response.json();
         if (response.ok) {
             const name = (result.pipeline && result.pipeline.name) || result.pipeline_id;
-            showAlert('success', `Pipeline duplicated as "${name}"`);
+            showManagementAlert('success', `Pipeline duplicated as "${name}"`);
             await refreshPipelines();
         } else {
-            showAlert('error', `Failed to duplicate pipeline: ${result.error || response.status}`);
+            showManagementAlert('error', `Failed to duplicate pipeline: ${result.error || response.status}`);
         }
     } catch (error) {
-        showAlert('error', `Error duplicating pipeline: ${error.message}`);
+        showManagementAlert('error', `Error duplicating pipeline: ${error.message}`);
+    } finally {
+        pendingDuplicates.delete(pipelineId);
+        buttons.forEach(button => { button.disabled = false; button.classList.remove('disabled'); });
     }
 }
 
@@ -3051,19 +3027,19 @@ async function exportPipeline(pipelineId) {
     try {
         const pipeline = allPipelines.find(p => p.id === pipelineId);
         if (!pipeline) {
-            showAlert('error', 'Pipeline not found');
+            showManagementAlert('error', 'Pipeline not found');
             return;
         }
         
         // Show loading state
-        showAlert('info', 'Preparing pipeline export...');
+        showManagementAlert('info', 'Preparing pipeline export...');
         
         // Create a temporary link to download the file
         const response = await fetch(`/api/pipeline/${pipelineId}/export`);
         
         if (!response.ok) {
             const result = await response.json();
-            showAlert('error', `Failed to export pipeline: ${result.error}`);
+            showManagementAlert('error', `Failed to export pipeline: ${result.error}`);
             return;
         }
         
@@ -3088,146 +3064,95 @@ async function exportPipeline(pipelineId) {
         document.body.removeChild(a);
         window.URL.revokeObjectURL(url);
         
-        showAlert('success', `Pipeline "${pipeline.name}" exported successfully`);
+        showManagementAlert('success', `Pipeline "${pipeline.name}" exported successfully`);
         
     } catch (error) {
-        showAlert('error', `Error exporting pipeline: ${error.message}`);
+        showManagementAlert('error', `Error exporting pipeline: ${error.message}`);
     }
 }
 
 // Inference control functions
-function toggleInference(pipelineId, enabled) {
-    if (enabled) {
-        enableInference(pipelineId);
-    } else {
-        disableInference(pipelineId);
-    }
+const pendingPipelineControls = new Set();
+let managementStateVersion = 0;
+let pipelineRefreshSequence = 0;
+let metricsPending = false;
+let bulkInferencePending = false;
+const pendingPublisherPolls = new Set();
+const pendingDuplicates = new Set();
+function escapeManagementText(value) {
+    return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
 }
-
-async function enableInference(pipelineId) {
-    try {
-        const response = await fetch(`/api/pipeline/${pipelineId}/inference/enable`, {
-            method: 'POST'
+function managementDisplayData(value) {
+    if (typeof value === 'string') return escapeManagementText(value);
+    if (Array.isArray(value)) return value.map(managementDisplayData);
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [escapeManagementText(key), managementDisplayData(item)]));
+    return value;
+}
+function showManagementAlert(type, message, duration) {
+    return showAlert(type, escapeManagementText(message), duration);
+}
+function controlsDisabled(pipeline) {
+    return pipeline.status === 'starting' || pendingPipelineControls.has(pipeline.id);
+}
+function inferenceControl(pipeline) {
+    return `<label class="inference-toggle compact"><input type="checkbox"
+        ${pipeline.inference_enabled !== false ? 'checked' : ''}
+        ${controlsDisabled(pipeline) ? 'disabled' : ''}
+        onchange="toggleInference('${pipeline.id}', this.checked)"><span class="inference-slider"></span></label>`;
+}
+function syncPipelineControls(pipelineId) {
+    const pipeline = allPipelines.find(p => p.id === pipelineId);
+    if (!pipeline) return;
+    document.querySelectorAll(`[data-pipeline-id="${pipelineId}"]`).forEach(element => {
+        element.querySelectorAll('.inference-toggle input').forEach(input => {
+            input.checked = pipeline.inference_enabled !== false;
+            input.disabled = controlsDisabled(pipeline);
         });
-        
-        const result = await response.json();
-        
-        if (response.ok) {
-            showAlert('success', 'Inference enabled successfully');
-            
-            // Update the local pipeline data
-            const pipeline = allPipelines.find(p => p.id === pipelineId);
-            if (pipeline) {
-                pipeline.inference_enabled = true;
-                
-                // Update inference badge in card header
-                const cardElement = document.querySelector(`[data-pipeline-id="${pipelineId}"]`);
-                if (cardElement) {
-                    const inferenceBadge = cardElement.querySelector('.badge:nth-child(2)');
-                    if (inferenceBadge) {
-                        inferenceBadge.className = 'badge bg-info badge-sm';
-                        inferenceBadge.innerHTML = '<i class="fas fa-brain me-1"></i>Inference ON';
-                    }
-                    
-                    // Update inference button
-                    const inferenceBtn = cardElement.querySelector('.card-footer button:nth-child(2)');
-                    if (inferenceBtn) {
-                        inferenceBtn.className = 'btn btn-sm btn-danger';
-                        inferenceBtn.title = 'Disable Inference';
-                        inferenceBtn.onclick = () => disableInference(pipelineId);
-                    }
-                }
-                
-                // Update list view inference cell
-                const rowElement = document.querySelector(`tr[data-pipeline-id="${pipelineId}"]`);
-                if (rowElement) {
-                    const inferenceCell = rowElement.querySelector('td:nth-child(3)');
-                    if (inferenceCell) {
-                        inferenceCell.innerHTML = `
-                            <div class="d-flex align-items-center">
-                                <small class="text-muted me-2" style="font-size: 12px;">Inference:</small>
-                                <label class="inference-toggle compact">
-                                    <input type="checkbox" 
-                                           checked 
-                                           onchange="toggleInference('${pipelineId}', this.checked)">
-                                    <span class="inference-slider"></span>
-                                </label>
-                            </div>
-                        `;
-                    }
-                }
+        element.querySelectorAll('.destination-toggle-small input, .publisher-retry').forEach(input => {
+            input.disabled = controlsDisabled(pipeline);
+            if (input.dataset.publisherId) {
+                const dest = (pipeline.destinations || []).find(d => d.id === input.dataset.publisherId);
+                if (dest) input.checked = dest.enabled !== false && !dest.auto_disabled && !dest.is_paused;
             }
-            
-            refreshPipelines(true); // Preserve previews
-        } else {
-            showAlert('error', `Failed to enable inference: ${result.error}`);
-        }
-    } catch (error) {
-        showAlert('error', `Error enabling inference: ${error.message}`);
-    }
-}
-
-async function disableInference(pipelineId) {
-    try {
-        const response = await fetch(`/api/pipeline/${pipelineId}/inference/disable`, {
-            method: 'POST'
         });
-        
+    });
+}
+async function savePipelineControl(pipelineId, publisherId, enabled) {
+    const pipeline = allPipelines.find(p => p.id === pipelineId);
+    if (!pipeline || controlsDisabled(pipeline)) return;
+    pendingPipelineControls.add(pipelineId);
+    managementStateVersion++;
+    syncPipelineControls(pipelineId);
+    try {
+        const target = publisherId === null ? 'inference' : `publisher/${publisherId}`;
+        const response = await fetch(`/api/pipeline/${pipelineId}/${target}/${enabled ? 'enable' : 'disable'}`, {method: 'POST'});
         const result = await response.json();
-        
-        if (response.ok) {
-            showAlert('success', 'Inference disabled successfully');
-            
-            // Update the local pipeline data
-            const pipeline = allPipelines.find(p => p.id === pipelineId);
-            if (pipeline) {
-                pipeline.inference_enabled = false;
-                
-                // Update inference badge in card header
-                const cardElement = document.querySelector(`[data-pipeline-id="${pipelineId}"]`);
-                if (cardElement) {
-                    const inferenceBadge = cardElement.querySelector('.badge:nth-child(2)');
-                    if (inferenceBadge) {
-                        inferenceBadge.className = 'badge bg-secondary badge-sm';
-                        inferenceBadge.innerHTML = '<i class="fas fa-brain me-1"></i>Inference OFF';
-                    }
-                    
-                    // Update inference button
-                    const inferenceBtn = cardElement.querySelector('.card-footer button:nth-child(2)');
-                    if (inferenceBtn) {
-                        inferenceBtn.className = 'btn btn-sm btn-success';
-                        inferenceBtn.title = 'Enable Inference';
-                        inferenceBtn.onclick = () => enableInference(pipelineId);
-                    }
-                }
-                
-                // Update list view inference cell
-                const rowElement = document.querySelector(`tr[data-pipeline-id="${pipelineId}"]`);
-                if (rowElement) {
-                    const inferenceCell = rowElement.querySelector('td:nth-child(3)');
-                    if (inferenceCell) {
-                        inferenceCell.innerHTML = `
-                            <div class="d-flex align-items-center">
-                                <small class="text-muted me-2" style="font-size: 12px;">Inference:</small>
-                                <label class="inference-toggle compact">
-                                    <input type="checkbox" 
-                                           onchange="toggleInference('${pipelineId}', this.checked)">
-                                    <span class="inference-slider"></span>
-                                </label>
-                            </div>
-                        `;
-                    }
-                }
+        if (!response.ok && !result.saved) throw new Error(result.error || 'Setting could not be saved');
+        // Polling can replace allPipelines while the save is in flight.
+        const current = allPipelines.find(p => p.id === pipelineId) || pipeline;
+        if (publisherId === null) current.inference_enabled = enabled;
+        else {
+            const dest = (current.destinations || []).find(d => d.id === publisherId);
+            if (dest) {
+                dest.enabled = enabled;
+                if (enabled) { dest.auto_disabled = false; dest.is_paused = false; dest.failure_count = 0; }
             }
-            
-            refreshPipelines(true); // Preserve previews
-        } else {
-            showAlert('error', `Failed to disable inference: ${result.error}`);
         }
+        showManagementAlert(response.ok ? 'success' : 'warning', response.ok ? `${publisherId === null ? 'Inference' : 'Publisher'} setting saved` : result.error);
+        return response.ok;
     } catch (error) {
-        showAlert('error', `Error disabling inference: ${error.message}`);
+        showManagementAlert('error', error.message);
+        return false;
+    } finally {
+        managementStateVersion++;
+        pendingPipelineControls.delete(pipelineId);
+        syncPipelineControls(pipelineId);
+        await refreshPipelines(true);
     }
 }
+function toggleInference(pipelineId, enabled) { return savePipelineControl(pipelineId, null, enabled); }
+function enableInference(pipelineId) { return toggleInference(pipelineId, true); }
+function disableInference(pipelineId) { return toggleInference(pipelineId, false); }
 
 // Preview toggle switch functionality
 function togglePreviewSwitch(pipelineId, enabled) {
@@ -3330,7 +3255,7 @@ function startPreviewStream(pipelineId) {
         console.warn(`Preview stream timeout for pipeline ${pipelineId}`);
         activePreviews.delete(pipelineId);
         updatePreviewContainerVisibility(pipelineId, false);
-        showAlert('warning', 'Preview stream timed out. Pipeline may still be starting.');
+        showManagementAlert('warning', 'Preview stream timed out. Pipeline may still be starting.');
     }, 20000); // Increased timeout to allow for pipeline warmup
     
     previewImg.onload = function() {
@@ -3350,7 +3275,7 @@ function startPreviewStream(pipelineId) {
                 if (response.status === 503) {
                     // Pipeline is warming up, retry after a short delay
                     console.log(`Pipeline ${pipelineId} is warming up, retrying in 2 seconds...`);
-                    showAlert('info', 'Pipeline is starting up, retrying preview...');
+                    showManagementAlert('info', 'Pipeline is starting up, retrying preview...');
                     setTimeout(() => {
                         if (activePreviews.has(pipelineId)) {
                             console.log(`Retrying stream for pipeline ${pipelineId} after warmup`);
@@ -3376,7 +3301,7 @@ function startPreviewStream(pipelineId) {
                                 console.log(`Pipeline confirmed not running: ${statusData.status}`);
                                 activePreviews.delete(pipelineId);
                                 updatePreviewContainerVisibility(pipelineId, false);
-                                showAlert('warning', 'Pipeline is not running. Please start it first.');
+                                showManagementAlert('warning', 'Pipeline is not running. Please start it first.');
                             }
                         })
                         .catch(err => {
@@ -3389,13 +3314,13 @@ function startPreviewStream(pipelineId) {
                     console.error(`Stream failed with status ${response.status}`);
                     activePreviews.delete(pipelineId);
                     updatePreviewContainerVisibility(pipelineId, false);
-                    showAlert('error', 'Failed to start preview stream.');
+                    showManagementAlert('error', 'Failed to start preview stream.');
                 }
             })
             .catch(err => {
                 // Network error or other issue
                 console.error(`Error checking stream status for pipeline ${pipelineId}:`, err);
-                showAlert('warning', 'Could not connect to preview stream. Retrying...');
+                showManagementAlert('warning', 'Could not connect to preview stream. Retrying...');
                 
                 // Retry once after delay
                 setTimeout(() => {
@@ -3448,6 +3373,7 @@ function updatePreviewButtonState(pipelineId, isActive) {
 }
 
 function openFullPreview(pipelineId, pipelineName) {
+    pipelineName = (allPipelines.find(p => p.id === pipelineId) || {}).name || pipelineName || 'Pipeline';
     document.getElementById('fullPreviewTitle').textContent = pipelineName;
     
     const fullPreviewImg = document.getElementById('fullPreviewStream');
@@ -3740,14 +3666,15 @@ async function showPipelineDetails(pipelineId) {
             const modal = new bootstrap.Modal(document.getElementById('pipelineDetailsModal'));
             modal.show();
         } else {
-            showAlert('error', 'Failed to load pipeline details');
+            showManagementAlert('error', 'Failed to load pipeline details');
         }
     } catch (error) {
-        showAlert('error', 'Error loading pipeline details: ' + error.message);
+        showManagementAlert('error', 'Error loading pipeline details: ' + error.message);
     }
 }
 
 function renderPipelineDetails(pipeline) {
+    pipeline = managementDisplayData(pipeline);
     const content = document.getElementById('pipelineDetailsContent');
     const createdDate = new Date(pipeline.created_date).toLocaleString();
     const modifiedDate = pipeline.modified_date ? new Date(pipeline.modified_date).toLocaleString() : 'Never';
@@ -3829,7 +3756,7 @@ async function startAllPipelines() {
     const stoppedPipelines = filteredPipelines.filter(p => p.status === 'stopped');
     
     if (stoppedPipelines.length === 0) {
-        showAlert('info', 'No stopped pipelines to start in current view');
+        showManagementAlert('info', 'No stopped pipelines to start in current view');
         return;
     }
     
@@ -3838,7 +3765,7 @@ async function startAllPipelines() {
     }
     
     // Show progress alert
-    showAlert('info', `Starting ${stoppedPipelines.length} pipeline(s)...`);
+    showManagementAlert('info', `Starting ${stoppedPipelines.length} pipeline(s)...`);
     
     let successCount = 0;
     let errorCount = 0;
@@ -3911,11 +3838,11 @@ async function startAllPipelines() {
     
     // Show final results
     if (successCount > 0 && errorCount === 0) {
-        showAlert('success', `Successfully started all ${successCount} pipeline(s)`);
+        showManagementAlert('success', `Successfully started all ${successCount} pipeline(s)`);
     } else if (successCount > 0 && errorCount > 0) {
-        showAlert('warning', `Started ${successCount} pipeline(s) successfully, ${errorCount} failed to start`);
+        showManagementAlert('warning', `Started ${successCount} pipeline(s) successfully, ${errorCount} failed to start`);
     } else {
-        showAlert('error', `Failed to start all ${errorCount} pipeline(s)`);
+        showManagementAlert('error', `Failed to start all ${errorCount} pipeline(s)`);
     }
     
     // Refresh to update UI
@@ -3926,7 +3853,7 @@ async function stopAllPipelines() {
     const runningPipelines = filteredPipelines.filter(p => p.status === 'running');
     
     if (runningPipelines.length === 0) {
-        showAlert('info', 'No running pipelines to stop in current view');
+        showManagementAlert('info', 'No running pipelines to stop in current view');
         return;
     }
     
@@ -3967,192 +3894,48 @@ async function stopAllPipelines() {
     }
     
     if (successCount > 0) {
-        showAlert('success', `Stopped ${successCount} pipeline(s) successfully`);
+        showManagementAlert('success', `Stopped ${successCount} pipeline(s) successfully`);
         refreshPipelines(true); // Update statistics
     }
     
     if (errorCount > 0) {
-        showAlert('warning', `Failed to stop ${errorCount} pipeline(s)`);
+        showManagementAlert('warning', `Failed to stop ${errorCount} pipeline(s)`);
     }
 }
 
-async function enableAllInference() {
-    const runningPipelines = filteredPipelines.filter(p => p.status === 'running');
-    
-    if (runningPipelines.length === 0) {
-        showAlert('info', 'No running pipelines found in current view');
-        return;
-    }
-    
-    const disabledInferencePipelines = runningPipelines.filter(p => p.inference_enabled === false);
-    
-    if (disabledInferencePipelines.length === 0) {
-        showAlert('info', 'All running pipelines in current view already have inference enabled');
-        return;
-    }
-    
-    let successCount = 0;
-    let errorCount = 0;
-    
-    for (const pipeline of disabledInferencePipelines) {
-        try {
-            const response = await fetch(`/api/pipeline/${pipeline.id}/inference/enable`, {
-                method: 'POST'
-            });
-            
-            if (response.ok) {
-                successCount++;
-                pipeline.inference_enabled = true;
-                
-                // Update inference toggle switch in card view
-                const cardElement = document.querySelector(`[data-pipeline-id="${pipeline.id}"]`);
-                if (cardElement) {
-                    const inferenceBadge = cardElement.querySelector('.badge:nth-child(2)');
-                    if (inferenceBadge) {
-                        inferenceBadge.className = 'badge bg-info badge-sm';
-                        inferenceBadge.innerHTML = 'Inference ON';
-                    }
-                    
-                    // Update inference toggle switch
-                    const inferenceToggle = cardElement.querySelector('.inference-toggle input');
-                    if (inferenceToggle) {
-                        inferenceToggle.checked = true;
-                    }
-                }
-                
-                // Update inference toggle switch in list view
-                const rowElement = document.querySelector(`tr[data-pipeline-id="${pipeline.id}"]`);
-                if (rowElement) {
-                    const inferenceCell = rowElement.querySelector('td:nth-child(3)');
-                    if (inferenceCell) {
-                        inferenceCell.innerHTML = `
-                            <div class="d-flex align-items-center justify-content-center">
-                                <label class="inference-toggle compact">
-                                    <input type="checkbox" 
-                                           checked 
-                                           onchange="toggleInference('${pipeline.id}', this.checked)">
-                                    <span class="inference-slider"></span>
-                                </label>
-                            </div>
-                        `;
-                    }
-                }
-            } else {
-                errorCount++;
-                console.error(`Failed to enable inference for pipeline ${pipeline.id}`);
-            }
-        } catch (error) {
-            errorCount++;
-            console.error(`Error enabling inference for pipeline ${pipeline.id}:`, error);
+async function setAllInference(enabled) {
+    if (bulkInferencePending) return;
+    bulkInferencePending = true;
+    let saved = 0, failed = 0, skipped = 0;
+    try {
+        const targets = filteredPipelines.filter(p => (p.inference_enabled !== false) !== enabled);
+        for (const pipeline of targets) {
+            if (controlsDisabled(pipeline)) { skipped++; continue; }
+            if (await savePipelineControl(pipeline.id, null, enabled)) saved++;
+            else failed++;
         }
-        
-        // Add small delay to avoid overwhelming the server
-        await new Promise(resolve => setTimeout(resolve, 50));
-    }
-    
-    if (successCount > 0) {
-        showAlert('success', `Enabled inference for ${successCount} pipeline(s)`);
-    }
-    
-    if (errorCount > 0) {
-        showAlert('warning', `Failed to enable inference for ${errorCount} pipeline(s)`);
+        showManagementAlert(failed || skipped ? 'warning' : 'info',
+            `Inference: ${saved} updated, ${failed} failed or not applied, ${skipped} busy. Applies to the current filtered view.`);
+    } finally {
+        bulkInferencePending = false;
     }
 }
+async function enableAllInference() { return setAllInference(true); }
+async function disableAllInference() { return setAllInference(false); }
 
-async function disableAllInference() {
-    const runningPipelines = filteredPipelines.filter(p => p.status === 'running');
-    
-    if (runningPipelines.length === 0) {
-        showAlert('info', 'No running pipelines found in current view');
-        return;
-    }
-    
-    const enabledInferencePipelines = runningPipelines.filter(p => p.inference_enabled !== false);
-    
-    if (enabledInferencePipelines.length === 0) {
-        showAlert('info', 'All running pipelines in current view already have inference disabled');
-        return;
-    }
-    
-    let successCount = 0;
-    let errorCount = 0;
-    
-    for (const pipeline of enabledInferencePipelines) {
-        try {
-            const response = await fetch(`/api/pipeline/${pipeline.id}/inference/disable`, {
-                method: 'POST'
-            });
-            
-            if (response.ok) {
-                successCount++;
-                pipeline.inference_enabled = false;
-                
-                // Update inference toggle switch in card view
-                const cardElement = document.querySelector(`[data-pipeline-id="${pipeline.id}"]`);
-                if (cardElement) {
-                    const inferenceBadge = cardElement.querySelector('.badge:nth-child(2)');
-                    if (inferenceBadge) {
-                        inferenceBadge.className = 'badge bg-secondary badge-sm';
-                        inferenceBadge.innerHTML = 'Inference OFF';
-                    }
-                    
-                    // Update inference toggle switch
-                    const inferenceToggle = cardElement.querySelector('.inference-toggle input');
-                    if (inferenceToggle) {
-                        inferenceToggle.checked = false;
-                    }
-                }
-                
-                // Update inference toggle switch in list view
-                const rowElement = document.querySelector(`tr[data-pipeline-id="${pipeline.id}"]`);
-                if (rowElement) {
-                    const inferenceCell = rowElement.querySelector('td:nth-child(3)');
-                    if (inferenceCell) {
-                        inferenceCell.innerHTML = `
-                            <div class="d-flex align-items-center justify-content-center">
-                                <label class="inference-toggle compact">
-                                    <input type="checkbox" 
-                                           onchange="toggleInference('${pipeline.id}', this.checked)">
-                                    <span class="inference-slider"></span>
-                                </label>
-                            </div>
-                        `;
-                    }
-                }
-            } else {
-                errorCount++;
-                console.error(`Failed to disable inference for pipeline ${pipeline.id}`);
-            }
-        } catch (error) {
-            errorCount++;
-            console.error(`Error disabling inference for pipeline ${pipeline.id}:`, error);
-        }
-        
-        // Add small delay to avoid overwhelming the server
-        await new Promise(resolve => setTimeout(resolve, 50));
-    }
-    
-    if (successCount > 0) {
-        showAlert('success', `Disabled inference for ${successCount} pipeline(s)`);
-    }
-    
-    if (errorCount > 0) {
-        showAlert('warning', `Failed to disable inference for ${errorCount} pipeline(s)`);
-    }
-}
 
 function showAllPreviews() {
     const runningPipelines = filteredPipelines.filter(p => p.status === 'running');
     
     if (runningPipelines.length === 0) {
-        showAlert('info', 'No running pipelines found in current view');
+        showManagementAlert('info', 'No running pipelines found in current view');
         return;
     }
     
     const pipelinesWithoutPreview = runningPipelines.filter(p => !activePreviews.has(p.id));
     
     if (pipelinesWithoutPreview.length === 0) {
-        showAlert('info', 'All running pipelines in current view already have previews enabled');
+        showManagementAlert('info', 'All running pipelines in current view already have previews enabled');
         return;
     }
     
@@ -4202,7 +3985,7 @@ function showAllPreviews() {
         });
     }
     
-    showAlert('success', `Enabled previews for ${pipelinesWithoutPreview.length} pipeline(s)`);
+    showManagementAlert('success', `Enabled previews for ${pipelinesWithoutPreview.length} pipeline(s)`);
 }
 
 function hideAllPreviews() {
@@ -4211,7 +3994,7 @@ function hideAllPreviews() {
     const activeFilteredPreviews = Array.from(activePreviews).filter(id => filteredPipelineIds.has(id));
     
     if (activeFilteredPreviews.length === 0) {
-        showAlert('info', 'No active previews to hide in current view');
+        showManagementAlert('info', 'No active previews to hide in current view');
         return;
     }
     
@@ -4264,7 +4047,7 @@ function hideAllPreviews() {
     // Hide list preview overlay if visible
     hideListPreview();
     
-    showAlert('success', `Disabled previews for ${previewCount} pipeline(s) in current view`);
+    showManagementAlert('success', `Disabled previews for ${previewCount} pipeline(s) in current view`);
 }
 
 // Import pipeline function
@@ -4278,13 +4061,13 @@ function importPipeline() {
         
         // Validate file type
         if (!file.name.endsWith('.zip')) {
-            showAlert('error', 'Please select a ZIP file containing a pipeline export');
+            showManagementAlert('error', 'Please select a ZIP file containing a pipeline export');
             return;
         }
         
         try {
             // Show loading state
-            showAlert('info', 'Importing pipeline...');
+            showManagementAlert('info', 'Importing pipeline...');
             
             // Create form data
             const formData = new FormData();
@@ -4299,16 +4082,16 @@ function importPipeline() {
             const result = await response.json();
             
             if (response.ok) {
-                showAlert('success', `Pipeline "${result.pipeline_name}" imported successfully`);
+                showManagementAlert('success', `Pipeline "${result.pipeline_name}" imported successfully`);
                 
                 // Refresh pipelines to show the new import
                 refreshPipelines();
             } else {
-                showAlert('error', `Failed to import pipeline: ${result.error}`);
+                showManagementAlert('error', `Failed to import pipeline: ${result.error}`);
             }
             
         } catch (error) {
-            showAlert('error', `Error importing pipeline: ${error.message}`);
+            showManagementAlert('error', `Error importing pipeline: ${error.message}`);
         }
         
         // Reset file input
@@ -4320,46 +4103,8 @@ function importPipeline() {
 }
 
 // Publisher control functions
-async function togglePublisher(pipelineId, publisherId, enabled) {
-    try {
-        const action = enabled ? 'enable' : 'disable';
-        const response = await fetch(`/api/pipeline/${pipelineId}/publisher/${publisherId}/${action}`, {
-            method: 'POST'
-        });
-        
-        const result = await response.json();
-        
-        if (response.ok) {
-            showAlert('success', `Publisher ${enabled ? 'enabled' : 'disabled'} successfully`);
-            
-            // Update local pipeline data
-            const pipeline = allPipelines.find(p => p.id === pipelineId);
-            if (pipeline && pipeline.destinations) {
-                const destination = pipeline.destinations.find(dest => dest.id === publisherId);
-                if (destination) {
-                    destination.enabled = enabled;
-                }
-            }
-            
-            // Update the UI immediately without full refresh
-            updatePublisherStateInUI(pipelineId, publisherId, enabled);
-            
-        } else {
-            showAlert('error', `Failed to ${action} publisher: ${result.error}`);
-            // Revert the toggle
-            const toggle = document.querySelector(`input[onchange*="${publisherId}"]`);
-            if (toggle) {
-                toggle.checked = !enabled;
-            }
-        }
-    } catch (error) {
-        showAlert('error', `Error ${enabled ? 'enabling' : 'disabling'} publisher: ${error.message}`);
-        // Revert the toggle
-        const toggle = document.querySelector(`input[onchange*="${publisherId}"]`);
-        if (toggle) {
-            toggle.checked = !enabled;
-        }
-    }
+function togglePublisher(pipelineId, publisherId, enabled) {
+    return savePipelineControl(pipelineId, publisherId, enabled);
 }
 
 function updatePublisherStateInUI(pipelineId, publisherId, enabled) {

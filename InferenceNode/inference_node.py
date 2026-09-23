@@ -2490,8 +2490,16 @@ class InferenceNode:
                 if not self.pipeline_manager:
                     return jsonify({'error': 'Pipeline manager not available'}), 503
                     
-                config = request.get_json()
-                
+                from flask_login import current_user
+                from InferenceNode.pipeline_form import prepare_pipeline_form
+                from InferenceNode.pipeline_store import AccessDenied
+                try:
+                    config = prepare_pipeline_form(request.get_json(), current_user, self._collect_frame_source_types())
+                except AccessDenied:
+                    return jsonify({'error': 'Pipeline not found or access denied'}), 404
+                except ValueError as exc:
+                    return jsonify({'error': str(exc)}), 400
+
                 # Validate required fields
                 required_fields = ['name', 'frame_source', 'model', 'destinations']
                 for field in required_fields:
@@ -2868,6 +2876,16 @@ class InferenceNode:
                     
                     self.logger.info(f"Device '{original_device}' formatted to '{formatted_device}' for engine '{engine_type}' (update)")
                 
+                from flask_login import current_user
+                from InferenceNode.pipeline_form import prepare_pipeline_form
+                from InferenceNode.pipeline_store import AccessDenied
+                try:
+                    data = prepare_pipeline_form(data, current_user, self._collect_frame_source_types())
+                except AccessDenied:
+                    return jsonify({'error': 'Pipeline not found or access denied'}), 404
+                except ValueError as exc:
+                    return jsonify({'error': str(exc)}), 400
+
                 # Update the pipeline
                 success = self.pipeline_manager.update_pipeline(pipeline_id, data)
                 if not success:
@@ -2987,6 +3005,8 @@ class InferenceNode:
                 })
                 
             except Exception as e:
+                if getattr(e, 'saved', False):
+                    return jsonify({'error': str(e), 'saved': True, 'runtime_applied': False}), 503
                 self.logger.error(f"Enable pipeline inference error: {str(e)}")
                 return jsonify({'error': str(e)}), 500
         
@@ -3010,6 +3030,8 @@ class InferenceNode:
                 })
                 
             except Exception as e:
+                if getattr(e, 'saved', False):
+                    return jsonify({'error': str(e), 'saved': True, 'runtime_applied': False}), 503
                 self.logger.error(f"Disable pipeline inference error: {str(e)}")
                 return jsonify({'error': str(e)}), 500
         
@@ -3034,6 +3056,8 @@ class InferenceNode:
                 })
                 
             except Exception as e:
+                if getattr(e, 'saved', False):
+                    return jsonify({'error': str(e), 'saved': True, 'runtime_applied': False}), 503
                 self.logger.error(f"Enable pipeline publisher error: {str(e)}")
                 return jsonify({'error': str(e)}), 500
         
@@ -3058,6 +3082,8 @@ class InferenceNode:
                 })
                 
             except Exception as e:
+                if getattr(e, 'saved', False):
+                    return jsonify({'error': str(e), 'saved': True, 'runtime_applied': False}), 503
                 self.logger.error(f"Disable pipeline publisher error: {str(e)}")
                 return jsonify({'error': str(e)}), 500
         
@@ -3206,6 +3232,10 @@ class InferenceNode:
                 if hasattr(pipeline_instance, 'is_initialized') and not pipeline_instance.is_initialized():
                     return jsonify({'error': 'Pipeline is not initialized'}), 400
                 
+                if request.method == 'HEAD':
+                    ready = pipeline_instance.get_latest_frame() is not None
+                    return Response(status=200 if ready else 503)
+
                 # Enable streaming BEFORE checking for frames, so frames will be processed with results
                 if hasattr(pipeline_instance, 'start_streaming'):
                     pipeline_instance.start_streaming()
@@ -3322,6 +3352,10 @@ class InferenceNode:
                 if hasattr(pipeline_instance, 'is_initialized') and not pipeline_instance.is_initialized():
                     return jsonify({'error': 'Pipeline is not initialized'}), 400
                 
+                if request.method == 'HEAD':
+                    ready = pipeline_instance.get_latest_frame() is not None
+                    return Response(status=200 if ready else 503)
+
                 # Enable streaming BEFORE checking for frames, so frames will be processed with results
                 if hasattr(pipeline_instance, 'start_streaming'):
                     pipeline_instance.start_streaming()

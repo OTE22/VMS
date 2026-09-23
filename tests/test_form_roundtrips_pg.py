@@ -378,3 +378,160 @@ def test_test_message_reports_each_favorite(live_forms):
     assert r.status_code == 200, r.json
     assert set(r.json['results']) == set(ids)
     assert all(result['status'] == 'success' for result in r.json['results'].values())
+
+
+# Pipeline Builder safety regressions (shared isolated authenticated fixture).
+
+def builder_config():
+    return {'name': 'Builder '+uuid.uuid4().hex, 'frame_source': {'capture_type':'webcam','config':{'source':0}},
+            'model': {'engine_type':'pass','device':'cpu'}, 'destinations':[], 'inference_enabled':False}
+
+
+def builder_saved(env, response):
+    assert response.status_code == 200, response.json
+    from InferenceNode.pipeline_repository import repository
+    return repository.get(response.json['pipeline_id'])['config']
+
+
+@pytest.mark.parametrize('source', [
+    {'capture_type':'ip_camera','config':{}},
+    {'capture_type':'audit_unknown','config':{}},
+    {'capture_type':'ip_camera','config':None},
+])
+def test_invalid_source_not_saved(live_forms, source):
+    body=builder_config();body['frame_source']=source
+    response=live_forms['send']('/api/pipeline/create',body)
+    assert response.status_code == 400, response.json
+    assert one(live_forms,'SELECT count(*) AS n FROM pipelines WHERE name=:name',name=body['name'])['n']==0
+
+
+def test_favorite_secret_resolved_without_api_disclosure(live_forms):
+    favorite=live_forms['send']('/api/publisher/favorites',{'name':uuid.uuid4().hex,'type':'mqtt',
+        'config':{'server':'broker.invalid','port':1883,'topic':'test','password':'fake-favorite-secret'}}).json['favorite']
+    assert favorite['config']['password']=='***'
+    body=builder_config();body['destinations']=[{'type':'mqtt','favorite_id':favorite['id'],'config':favorite['config']}]
+    result=builder_saved(live_forms,live_forms['send']('/api/pipeline/create',body))
+    assert result['destinations'][0]['config']['password']=='fake-favorite-secret'
+    assert 'favorite_id' not in result['destinations'][0]
+    assert 'fake-favorite-secret' not in live_forms['client'].get('/api/pipelines').get_data(as_text=True)
+    body['destinations'][0]['config']['password']=None
+    result=builder_saved(live_forms,live_forms['send']('/api/pipeline/create',body))
+    assert result['destinations'][0]['config']['password'] is None
+
+
+def test_camera_test_inherits_secret_and_keeps_inference_disabled(live_forms):
+    body=builder_config();body['frame_source']={'capture_type':'ip_camera','config':{'source':'rtsp://camera.invalid/live','password':'fake-camera-secret'}}
+    original=builder_saved(live_forms,live_forms['send']('/api/pipeline/create',body))
+    body['source_pipeline_id']=original['id'];body['frame_source']['config']['password']='***'
+    result=builder_saved(live_forms,live_forms['send']('/api/pipeline/create',body))
+    assert result['frame_source']['config']['password']=='fake-camera-secret'
+    assert result['inference_enabled'] is False
+    assert 'source_pipeline_id' not in result
+    body['source_pipeline_id']=str(uuid.uuid4())
+    assert live_forms['send']('/api/pipeline/create',body).status_code==404
+
+
+def test_invalid_edit_preserves_saved_configuration(live_forms):
+    original=builder_saved(live_forms,live_forms['send']('/api/pipeline/create',builder_config()))
+    response=live_forms['send']('/api/pipeline/'+original['id'],{'frame_source':{'capture_type':'ip_camera','config':{}}},method='PUT')
+    assert response.status_code==400
+    assert one(live_forms,'SELECT config FROM pipelines WHERE pipeline_id=:pid',pid=original['id'])['config']['frame_source']==original['frame_source']
+
+
+# Management controls: real PostgreSQL transactions with isolated fake runtime.
+def management_pipeline(env):
+    body = builder_config()
+    body['inference_enabled'] = True
+    body['destinations'] = [{'type': 'null', 'enabled': True, 'config': {}}]
+    return builder_saved(env, env['send']('/api/pipeline/create', body))
+
+
+def test_management_missing_publisher_is_not_success(live_forms):
+    p = management_pipeline(live_forms)
+    response = live_forms['send']('/api/pipeline/'+p['id']+'/publisher/'+str(uuid.uuid4())+'/disable')
+    assert response.status_code == 404
+    stored = one(live_forms, 'SELECT config FROM pipelines WHERE pipeline_id=:pid', pid=p['id'])['config']
+    assert stored['destinations'] == p['destinations']
+
+
+def test_management_concurrent_workers_preserve_both_controls(live_forms, monkeypatch, tmp_path):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from InferenceNode.pipeline_manager import PipelineManager
+    p = management_pipeline(live_forms)
+    first = live_forms['node'].pipeline_manager
+    second = PipelineManager(str(tmp_path), store=first.store)
+    original = first.store.set_control
+    barrier = threading.Barrier(2)
+    def concurrent_write(*args, **kwargs):
+        barrier.wait(timeout=10)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(first.store, 'set_control', concurrent_write)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a = pool.submit(first.disable_pipeline_inference, p['id'])
+        b = pool.submit(second.disable_pipeline_publisher, p['id'], p['destinations'][0]['id'])
+        assert a.result(timeout=15) is True
+        assert b.result(timeout=15) is True
+    stored = one(live_forms, 'SELECT config FROM pipelines WHERE pipeline_id=:pid', pid=p['id'])['config']
+    assert stored['inference_enabled'] is False
+    assert stored['destinations'][0]['enabled'] is False
+    assert stored['frame_source'] == p['frame_source']
+
+
+@pytest.mark.parametrize('endpoint,ready', [('stream', True), ('stream/hq', True), ('stream', False)])
+def test_management_readiness_head_has_no_viewer_effect(live_forms, endpoint, ready):
+    import threading
+    from types import SimpleNamespace
+    from InferenceNode.pipeline import InferencePipeline
+    p = management_pipeline(live_forms)
+    manager = live_forms['node'].pipeline_manager
+    instance = SimpleNamespace(_viewer_count=0, _is_streaming=False, _frame_lock=threading.Lock(),
+        is_running=lambda: True, is_initialized=lambda: True,
+        get_latest_frame=lambda: object() if ready else None)
+    instance.start_streaming = lambda: InferencePipeline.start_streaming(instance)
+    instance.stop_streaming = lambda: InferencePipeline.stop_streaming(instance)
+    manager.active_pipelines[p['id']] = {'pipeline_instance': instance}
+    try:
+        response = live_forms['client'].head('/api/pipeline/'+p['id']+'/'+endpoint)
+        assert response.status_code == (200 if ready else 503)
+        response.close()
+        assert instance._viewer_count == 0
+        assert instance._is_streaming is False
+    finally:
+        manager.active_pipelines.pop(p['id'], None)
+
+
+def test_management_runtime_failure_reports_saved_state(live_forms):
+    from types import SimpleNamespace
+    p = management_pipeline(live_forms)
+    manager = live_forms['node'].pipeline_manager
+    def fail():
+        raise RuntimeError('isolated runtime failure')
+    manager.active_pipelines[p['id']] = {'pipeline_instance': SimpleNamespace(disable_inference=fail)}
+    try:
+        response = live_forms['send']('/api/pipeline/'+p['id']+'/inference/disable')
+        assert response.status_code == 503
+        assert response.json['saved'] is True
+        assert response.json['runtime_applied'] is False
+        assert one(live_forms, 'SELECT config FROM pipelines WHERE pipeline_id=:pid', pid=p['id'])['config']['inference_enabled'] is False
+    finally:
+        manager.active_pipelines.pop(p['id'], None)
+
+
+def test_management_db_failure_does_not_report_success_or_apply_runtime(live_forms, monkeypatch):
+    from types import SimpleNamespace
+    p = management_pipeline(live_forms)
+    manager = live_forms['node'].pipeline_manager
+    applied = []
+    manager.active_pipelines[p['id']] = {'pipeline_instance': SimpleNamespace(disable_inference=lambda: applied.append(True))}
+    def fail(*args):
+        raise RuntimeError('isolated database failure')
+    monkeypatch.setattr(manager.store, 'set_control', fail)
+    try:
+        response = live_forms['send']('/api/pipeline/'+p['id']+'/inference/disable')
+        assert response.status_code == 500
+        assert not response.json.get('saved')
+        assert not applied
+        assert one(live_forms, 'SELECT config FROM pipelines WHERE pipeline_id=:pid', pid=p['id'])['config']['inference_enabled'] is True
+    finally:
+        manager.active_pipelines.pop(p['id'], None)

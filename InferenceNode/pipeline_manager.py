@@ -25,6 +25,11 @@ UI_TO_LIBRARY_CAPTURE_TYPE = {
 }
 LIBRARY_TO_UI_CAPTURE_TYPE = {v: k for k, v in UI_TO_LIBRARY_CAPTURE_TYPE.items()}
 
+class ControlApplyError(RuntimeError):
+    """The durable setting changed, but the live runtime could not apply it."""
+    saved = True
+
+
 class PipelineManager:
     """Runs inference pipelines. TRANSIENT RUNTIME ONLY.
 
@@ -57,6 +62,7 @@ class PipelineManager:
             from .pipeline_repository import repository as _repository
             store = _repository
         self.store = store
+        self._control_lock = threading.RLock()
 
         # ---- transient runtime state (never persisted) ----
         self.active_pipelines = {}  # pipeline_id -> {'pipeline_instance': ..., 'started_at': ...}
@@ -707,24 +713,24 @@ class PipelineManager:
             self.logger.error(f"Error stopping pipeline {pipeline_id}: {e}")
             return False
     
-    def _set_inference_enabled(self, pipeline_id: str, enabled: bool) -> bool:
-        """Persist the inference flag to Postgres and apply it to any live instance."""
-        try:
-            cfg = self._get_config(pipeline_id)
-            if cfg is not None:
-                cfg['inference_enabled'] = enabled
-                self._put_config(pipeline_id, cfg)
-
-            if pipeline_id in self.active_pipelines and 'pipeline_instance' in self.active_pipelines[pipeline_id]:
-                pipeline_instance = self.active_pipelines[pipeline_id]['pipeline_instance']
-                method = 'enable_inference' if enabled else 'disable_inference'
-                if hasattr(pipeline_instance, method):
-                    getattr(pipeline_instance, method)()
+    def _save_control(self, pipeline_id, enabled, publisher_id=None):
+        # Keep commit/application order consistent within this worker. PostgreSQL's
+        # row lock additionally protects saved flags across workers and sessions.
+        with self._control_lock:
+            if not self.store.set_control(pipeline_id, enabled, publisher_id):
+                return False
+            instance = self.active_pipelines.get(pipeline_id, {}).get('pipeline_instance')
+            if instance is not None:
+                method = ('enable_' if enabled else 'disable_') + ('inference' if publisher_id is None else 'publisher')
+                try:
+                    getattr(instance, method)(*(() if publisher_id is None else (publisher_id,)))
+                except Exception as exc:
+                    self.logger.error('Saved control could not be applied to runtime for %s', pipeline_id)
+                    raise ControlApplyError('Setting saved, but runtime update failed. Retry the setting or restart the pipeline.') from exc
             return True
-        except Exception as e:
-            self.logger.error(
-                f"Error {'enabling' if enabled else 'disabling'} inference for {pipeline_id}: {e}")
-            return False
+
+    def _set_inference_enabled(self, pipeline_id: str, enabled: bool) -> bool:
+        return self._save_control(pipeline_id, enabled)
 
     def enable_pipeline_inference(self, pipeline_id: str) -> bool:
         return self._set_inference_enabled(pipeline_id, True)
@@ -733,36 +739,7 @@ class PipelineManager:
         return self._set_inference_enabled(pipeline_id, False)
 
     def _set_publisher_enabled(self, pipeline_id: str, publisher_id: str, enabled: bool) -> bool:
-        """Persist a destination's enabled flag to Postgres and apply it live."""
-        try:
-            cfg = self._get_config(pipeline_id)
-            if cfg is not None:
-                destinations = cfg.get('destinations', []) or []
-                found = False
-                for dest in destinations:
-                    if str(dest.get('id')) == str(publisher_id):
-                        dest['enabled'] = enabled
-                        found = True
-                        break
-                if not found:
-                    self.logger.warning(
-                        f"Publisher {publisher_id} not found among destinations of {pipeline_id}")
-                cfg['destinations'] = destinations
-                self._put_config(pipeline_id, cfg)
-            else:
-                self.logger.warning(f"Pipeline {pipeline_id} has no definition in PostgreSQL")
-
-            if pipeline_id in self.active_pipelines and 'pipeline_instance' in self.active_pipelines[pipeline_id]:
-                pipeline_instance = self.active_pipelines[pipeline_id]['pipeline_instance']
-                method = 'enable_publisher' if enabled else 'disable_publisher'
-                if hasattr(pipeline_instance, method):
-                    getattr(pipeline_instance, method)(publisher_id)
-            return True
-        except Exception as e:
-            self.logger.error(
-                f"Error {'enabling' if enabled else 'disabling'} publisher "
-                f"{publisher_id} for pipeline {pipeline_id}: {e}")
-            return False
+        return self._save_control(pipeline_id, enabled, publisher_id)
 
     def enable_pipeline_publisher(self, pipeline_id: str, publisher_id: str) -> bool:
         return self._set_publisher_enabled(pipeline_id, publisher_id, True)
