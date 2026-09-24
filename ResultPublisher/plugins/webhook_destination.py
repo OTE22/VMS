@@ -227,7 +227,9 @@ def _classify_status(response) -> DeliveryResult:
         except (ValueError, AttributeError):
             feedback = None
         if feedback == 'pending':
-            return _r('PROCESSING_PENDING', retryable=True, retry_after=2.0)
+            # Accepted, but processing is not finished. Keep checking the same event.
+            return DeliveryResult(success=False, outcome='PROCESSING_PENDING',
+                                  retryable=True, retry_after=2.0)
         if feedback in ('saved', 'no_face', 'quality_rejected', 'duplicate',
                         'invalid_image', 'failed', 'ignored'):
             return DeliveryResult(success=True, outcome='FACE_' + feedback.upper())
@@ -628,6 +630,8 @@ class WebhookDestination(BaseResultDestination):
                 # This payload only - the destination stays enabled.
                 self.logger.error(f"{delivery_line} - dropping this delivery (payload rejected)")
                 print(f"[WEBHOOK] ✗ {result.outcome} from {resolved_url} - delivery dropped, destination stays enabled")
+            elif result.outcome == "PROCESSING_PENDING":
+                self.logger.info(f"{delivery_line} - accepted, awaiting processing result")
             elif not result.count_toward_destination_failure:
                 # Backpressure: reachable but busy. Retry, never disable.
                 self.logger.info(f"{delivery_line} - receiver busy, will retry")

@@ -235,6 +235,9 @@ class BaseResultDestination(ABC):
         disabled_now = False
         paused_now = False
         with self._lock:
+            # Pending processing is not an error; recovery clears stale failures.
+            self.last_error = (None if result.success or result.outcome == 'PROCESSING_PENDING'
+                               else result.error or f"publish failed ({result.outcome})")
             if result.success:
                 self._record_success()
                 self.frame_count += 1
@@ -475,7 +478,8 @@ class BaseResultDestination(ABC):
         status = ("rate_limited" if result.outcome == "PROCESSING_PENDING" else
                   "permanent_failure" if result.terminal_delivery else "failed")
         return {"status": status,
-                "error": result.error or "publish returned failure",
+                "error": (None if result.outcome == "PROCESSING_PENDING" else
+                          result.error or "publish returned failure"),
                 "outcome": result.outcome,
                 "retry_after": result.retry_after}
 
@@ -571,23 +575,16 @@ class BaseResultDestination(ABC):
         try:
             raw = self._publish(data)
         except Exception as e:
-            self.last_error = f"Failed to publish: {str(e)}"
-            self.logger.debug(self.last_error)
+            error = f"Failed to publish: {str(e)}"
+            self.logger.debug(error)
             return DeliveryResult(
                 success=False, outcome="CONNECTION_ERROR", retryable=True,
-                count_toward_destination_failure=True, error=self.last_error)
+                count_toward_destination_failure=True, error=error)
 
         if isinstance(raw, DeliveryResult):
-            if not raw.success:
-                # Kept for display/back-compat only - control flow reads the
-                # DeliveryResult, never this attribute.
-                self.last_error = raw.error or f"publish failed ({raw.outcome})"
             return raw
 
-        result = DeliveryResult.from_legacy(bool(raw))
-        if not result.success:
-            self.last_error = result.error
-        return result
+        return DeliveryResult.from_legacy(bool(raw))
 
     def _enqueue(self, data: Dict[str, Any], attempts: int = 0) -> None:
         """Add an event to the outbound queue and ensure the worker is running"""

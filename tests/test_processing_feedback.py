@@ -28,6 +28,7 @@ def test_processing_pending_is_backpressure_without_destination_failure():
     assert not result.success and result.retryable
     assert not result.count_toward_destination_failure
     assert result.retry_after == 2
+    assert result.error is None
 
 
 @pytest.mark.parametrize('outcome,expected', [('FACE_SAVED', 3), ('FACE_NO_FACE', 1),
@@ -87,3 +88,40 @@ def test_pending_then_saved_preserves_event_and_stops_followups(server, monkeypa
     assert p._track_last_sent[j['track_key']]['capture_count'] == 3
     assert destination.failure_count == 0
     assert destination.frame_count == 1
+
+    assert destination.last_error is None
+
+
+def test_pending_clears_stale_error_without_claiming_completed_delivery(server, monkeypatch):
+    script, port = server
+    script.push(500)
+    script.push(202, body=b'{"processing_status":"pending"}')
+    script.push(200, body=b'{"processing_status":"saved"}')
+    destination = _dest(port, monkeypatch)
+    payload = {'pipeline_id': 'pending-recovery', 'event_id': 'same-event'}
+    assert destination.publish_once(payload)['status'] == 'failed'
+    assert destination.last_error == 'HTTP 500'
+    pending = destination.publish_once(payload)
+    assert pending['status'] == 'rate_limited'
+    assert pending['outcome'] == 'PROCESSING_PENDING'
+    assert pending['error'] is None
+    assert destination.last_error is None
+    assert destination.frame_count == 0
+    assert destination.failure_count == 1
+    assert destination.enabled
+    assert destination.publish_once(payload)['status'] == 'success'
+    assert destination.last_error is None
+    assert destination.frame_count == 1
+    assert destination.failure_count == 0
+
+
+def test_success_clears_previous_delivery_error(server, monkeypatch):
+    script, port = server
+    script.push(500)
+    script.push(200)
+    destination = _dest(port, monkeypatch)
+    payload = {'pipeline_id': 'recovery'}
+    destination.publish_once(payload)
+    assert destination.last_error == 'HTTP 500'
+    destination.publish_once(payload)
+    assert destination.last_error is None
